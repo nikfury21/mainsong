@@ -49,10 +49,20 @@ async def get_mp3_url_rapidapi(session, video_id: str):
         "X-RapidAPI-Host": "youtube-mp36.p.rapidapi.com"
     }
     params = {"id": video_id}
-    async with session.get(url, headers=headers, params=params) as resp:
-        if resp.status == 200:
+
+    for _ in range(5):  # Retry 5 times if still processing
+        async with session.get(url, headers=headers, params=params) as resp:
+            if resp.status != 200:
+                return None
             data = await resp.json()
-            return data.get("link") or (data.get("formats", [{}])[0].get("url") if data.get("formats") else None)
+            print("RapidAPI response:", data)
+
+            if data.get("status") == "ok" and data.get("link"):
+                return data["link"]
+            elif data.get("status") == "processing":
+                await asyncio.sleep(3)
+            else:
+                break
     return None
 
 async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -86,23 +96,38 @@ async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         mp3_url = await get_mp3_url_rapidapi(session, video_id)
         if not mp3_url:
-            await update.message.reply_text("Could not retrieve MP3 file from YouTube.")
+            await update.message.reply_text("❌ Could not retrieve MP3 file from YouTube.")
+            await context.bot.send_message(chat_id=8353079084, text=f"❌ MP3 URL fetch failed for query: {user_query}")
             return
+
+        await update.message.reply_text("✅ MP3 ready, uploading...")
 
         try:
             async with session.get(mp3_url) as audio_resp:
-                if audio_resp.status != 200:
-                    await update.message.reply_text("Failed to download the MP3 file.")
+                if audio_resp.status != 200 or "audio" not in audio_resp.headers.get("Content-Type", ""):
+                    await update.message.reply_text("⚠️ Failed to download MP3: invalid or blocked link.")
+                    await context.bot.send_message(chat_id=8353079084, text=f"⚠️ Download error ({audio_resp.status}) for {user_query}")
                     return
 
                 data = await audio_resp.read()
                 await update.message.reply_audio(audio=data, title=title, performer=artist)
 
         except Exception as e:
-            await update.message.reply_text(f"Error sending audio: {e}")
+            await update.message.reply_text(f"❌ Error sending audio: {e}")
+            await context.bot.send_message(chat_id=8353079084, text=f"❌ Exception while sending audio:\n{e}")
+
+async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    error_message = f"⚠️ Global error: {context.error}"
+    print(error_message)
+    try:
+        await context.bot.send_message(chat_id=8353079084, text=error_message)
+    except Exception:
+        pass
 
 def run_telegram_bot():
     app_telegram = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app_telegram.add_error_handler(global_error_handler)
+
     app_telegram.add_handler(CommandHandler("song", song_command))
     print("Telegram bot is running...")
     app_telegram.run_polling()
@@ -117,4 +142,3 @@ if __name__ == "__main__":
 
     # Run Telegram bot in the main thread
     run_telegram_bot()
-
