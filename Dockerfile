@@ -25,4 +25,4 @@ EXPOSE 5000
 # ENV PORT=5000
 
 # Run the bot (Flask + Telegram bot concurrently)
-CMD ["python", "your_bot_script.py"]
+CMD ["python", "song.py"]
