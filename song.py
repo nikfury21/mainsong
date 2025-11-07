@@ -43,21 +43,23 @@ async def search_youtube_video_id(session, query: str):
     return None
 
 async def get_mp3_url_rapidapi(session, video_id: str):
-    url = "https://youtube-mp36.p.rapidapi.com/dl"
+    url = "https://yt-api.p.rapidapi.com/dl"
     headers = {
-        "X-RapidAPI-Key": RAPIDAPI_KEY,
-        "X-RapidAPI-Host": "youtube-mp36.p.rapidapi.com"
+        "x-rapidapi-key": RAPIDAPI_KEY,
+        "x-rapidapi-host": "yt-api.p.rapidapi.com"
     }
     params = {"id": video_id}
 
-    for _ in range(5):  # Retry 5 times if still processing
+    for _ in range(5):  # Retry up to 5 times if still processing
         async with session.get(url, headers=headers, params=params) as resp:
             if resp.status != 200:
+                print("RapidAPI error:", resp.status)
                 return None
             data = await resp.json()
             print("RapidAPI response:", data)
 
-            if data.get("status") == "ok" and data.get("link"):
+            # Works if 'link' exists and ends with .mp3
+            if data.get("status") == "ok" and data.get("link") and data["link"].endswith(".mp3"):
                 return data["link"]
             elif data.get("status") == "processing":
                 await asyncio.sleep(3)
@@ -103,7 +105,7 @@ async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ MP3 ready, uploading...")
 
         try:
-            async with session.get(mp3_url) as audio_resp:
+            async with session.get(mp3_url, allow_redirects=True, timeout=30) as audio_resp:
                 if audio_resp.status != 200 or "audio" not in audio_resp.headers.get("Content-Type", ""):
                     await update.message.reply_text("⚠️ Failed to download MP3: invalid or blocked link.")
                     await context.bot.send_message(chat_id=8353079084, text=f"⚠️ Download error ({audio_resp.status}) for {user_query}")
