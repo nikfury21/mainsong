@@ -42,7 +42,9 @@ async def search_youtube_video_id(session, query: str):
                 return items[0]["id"]["videoId"]
     return None
 
-async def get_mp3_url_rapidapi(session, video_id: str):
+# ---------- Dual RapidAPI Endpoints + Debug ----------
+async def get_mp3_url_primary(session, video_id: str):
+    """First RapidAPI endpoint (yt-api.p.rapidapi.com)"""
     url = "https://yt-api.p.rapidapi.com/dl"
     headers = {
         "x-rapidapi-key": RAPIDAPI_KEY,
@@ -50,22 +52,73 @@ async def get_mp3_url_rapidapi(session, video_id: str):
     }
     params = {"id": video_id}
 
-    for _ in range(5):  # Retry up to 5 times if still processing
+    for attempt in range(5):
         async with session.get(url, headers=headers, params=params) as resp:
-            if resp.status != 200:
-                print("RapidAPI error:", resp.status)
-                return None
             data = await resp.json()
-            print("RapidAPI response:", data)
+            print(f"[PrimaryAPI Attempt {attempt+1}] Response:", data)
 
-            # Works if 'link' exists and ends with .mp3
-            if data.get("status") == "ok" and data.get("link") and data["link"].endswith(".mp3"):
+            if data.get("status") == "ok" and data.get("link", "").endswith(".mp3"):
                 return data["link"]
-            elif data.get("status") == "processing":
+
+            if data.get("status") == "processing":
                 await asyncio.sleep(3)
+                continue
             else:
                 break
     return None
+
+
+async def get_mp3_url_backup(session, video_id: str):
+    """Backup RapidAPI endpoint (youtube-mp3-download1.p.rapidapi.com)"""
+    url = "https://youtube-mp3-download1.p.rapidapi.com/dl"
+    headers = {
+        "x-rapidapi-key": RAPIDAPI_KEY,
+        "x-rapidapi-host": "youtube-mp3-download1.p.rapidapi.com"
+    }
+    params = {"id": video_id}
+
+    for attempt in range(5):
+        async with session.get(url, headers=headers, params=params) as resp:
+            data = await resp.json()
+            print(f"[BackupAPI Attempt {attempt+1}] Response:", data)
+
+            if data.get("link", "").endswith(".mp3"):
+                return data["link"]
+
+            if data.get("status") == "processing":
+                await asyncio.sleep(3)
+                continue
+            else:
+                break
+    return None
+
+
+async def get_mp3_url_rapidapi(session, video_id: str, context=None):
+    """Try both APIs with better debug + DM logs"""
+    try:
+        # 1️⃣ Try primary API
+        link = await get_mp3_url_primary(session, video_id)
+        if link:
+            return link
+
+        # 2️⃣ If failed, try backup API
+        link = await get_mp3_url_backup(session, video_id)
+        if link:
+            return link
+
+        # 3️⃣ None worked
+        debug_msg = f"❌ Both APIs failed for video_id={video_id}"
+        print(debug_msg)
+        if context:
+            await context.bot.send_message(chat_id=8353079084, text=debug_msg)
+        return None
+
+    except Exception as e:
+        error_msg = f"⚠️ Exception in get_mp3_url_rapidapi: {e}"
+        print(error_msg)
+        if context:
+            await context.bot.send_message(chat_id=8353079084, text=error_msg)
+        return None
 
 async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_query = " ".join(context.args)
@@ -96,7 +149,7 @@ async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(f"Found YouTube video (ID: {video_id}). Fetching MP3 download link...")
 
-        mp3_url = await get_mp3_url_rapidapi(session, video_id)
+        mp3_url = await get_mp3_url_rapidapi(session, video_id, context)
         if not mp3_url:
             await update.message.reply_text("❌ Could not retrieve MP3 file from YouTube.")
             await context.bot.send_message(chat_id=8353079084, text=f"❌ MP3 URL fetch failed for query: {user_query}")
@@ -106,10 +159,20 @@ async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         try:
             async with session.get(mp3_url, allow_redirects=True, timeout=30) as audio_resp:
+                # 🪲 Debug DM for headers
+                await context.bot.send_message(
+                    chat_id=8353079084,
+                    text=f"🪲 Debug: Response headers = {dict(audio_resp.headers)}"
+                )
+            
                 if audio_resp.status != 200 or "audio" not in audio_resp.headers.get("Content-Type", ""):
                     await update.message.reply_text("⚠️ Failed to download MP3: invalid or blocked link.")
-                    await context.bot.send_message(chat_id=8353079084, text=f"⚠️ Download error ({audio_resp.status}) for {user_query}")
+                    await context.bot.send_message(
+                        chat_id=8353079084,
+                        text=f"⚠️ Download error ({audio_resp.status}) for {user_query}\nLink: {mp3_url}"
+                    )
                     return
+
 
                 data = await audio_resp.read()
                 await update.message.reply_audio(audio=data, title=title, performer=artist)
