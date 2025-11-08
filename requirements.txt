@@ -25,3 +25,5 @@ python-dotenv
 asyncpg
 pymongo
 gender-guesser
+python-telegram-bot==20.5
+
