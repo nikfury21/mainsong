@@ -78,6 +78,7 @@ async def get_mp3_url_rapidapi(session, video_id: str, debug_chat=None, query=No
 
 
 async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global sp
     user_query = " ".join(context.args)
     if not user_query:
         await update.message.reply_text("Please provide a song name after /song.")
@@ -97,7 +98,7 @@ async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Recreate client and retry (handles stale connections)
             await asyncio.sleep(2)
             try:
-                global sp
+                
                 sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
                     client_id=SPOTIFY_CLIENT_ID,
                     client_secret=SPOTIFY_CLIENT_SECRET
