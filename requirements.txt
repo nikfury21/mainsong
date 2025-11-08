@@ -3,3 +3,6 @@ spotipy
 aiohttp
 flask
 requests
+pyrogram
+tgcrypto
+pytgcalls
