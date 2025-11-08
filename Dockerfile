@@ -1,40 +1,38 @@
-# ─── Base Image ─────────────────────────────
+# Use official Python 3.10 slim image
 FROM python:3.10-slim
 
-# ─── Set Environment Variables ─────────────
+# Prevent Python from writing .pyc files and buffer stdout/stderr
 ENV PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    POETRY_VERSION=1.6.0
+    PIP_NO_CACHE_DIR=1
 
-# ─── Install system dependencies ───────────
+WORKDIR /app
+
+# Install system packages needed for building wheels, ffmpeg and git
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
+        git \
         ffmpeg \
         wget \
         curl \
-        git \
         libffi-dev \
         libssl-dev \
-        libpq-dev \
+        pkg-config \
         python3-dev \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# ─── Set working directory ─────────────────
-WORKDIR /app
-
-# ─── Copy requirements ─────────────────────
+# Copy requirements and install
 COPY requirements.txt .
 
-# ─── Upgrade pip and install dependencies ─
-RUN pip install --upgrade pip
+# Upgrade pip then install python deps
+RUN python -m pip install --upgrade pip setuptools wheel
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ─── Copy bot source code ──────────────────
+# Copy application code
 COPY . .
 
-# ─── Expose port if needed (for Flask webhooks) ─
+# Expose port for Flask (if used)
 EXPOSE 5000
 
-# ─── Set default command ───────────────────
+# Default command (adjust to your entrypoint script name)
 CMD ["python", "song.py"]
