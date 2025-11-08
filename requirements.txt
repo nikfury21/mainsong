@@ -1,9 +1,27 @@
-pyrogram==2.0.41
+git+https://github.com/prashantsahlot/FrozenGram.git
+
+# voice / playback / yt
 py-tgcalls
-tgcrypto==1.2.5
-spotipy
-aiohttp
-flask
-Pillow
 yt-dlp
 ffmpeg-python
+
+# web / http
+aiohttp
+flask
+Flask-RESTful
+requests
+aiofiles
+
+# telegram crypto + client
+tgcrypto==1.2.5
+pyrogram==1.4.16   # 👈 rollback to the compatible version
+
+# spotify / misc
+spotipy
+isodate
+Pillow
+psutil
+python-dotenv
+asyncpg
+pymongo
+gender-guesser
