@@ -93,32 +93,39 @@ async def get_mp3_url_backup(session, video_id: str):
     return None
 
 
-async def get_mp3_url_rapidapi(session, video_id: str, context=None):
-    """Try both APIs with better debug + DM logs"""
-    try:
-        # 1️⃣ Try primary API
-        link = await get_mp3_url_primary(session, video_id)
-        if link:
-            return link
+async def get_mp3_url_rapidapi(session, video_id: str, debug_chat=None, query=None):
+    url = "https://youtube-mp36.p.rapidapi.com/dl"
+    headers = {
+        "X-RapidAPI-Key": RAPIDAPI_KEY,
+        "X-RapidAPI-Host": "youtube-mp36.p.rapidapi.com"
+    }
+    params = {"id": video_id}
 
-        # 2️⃣ If failed, try backup API
-        link = await get_mp3_url_backup(session, video_id)
-        if link:
-            return link
+    for attempt in range(6):  # 6 attempts with backoff
+        try:
+            async with session.get(url, headers=headers, params=params, timeout=20) as resp:
+                data = await resp.json()
+                dbg = f"[Attempt {attempt+1}] RapidAPI status={resp.status}, data={data}"
+                print(dbg)
+                if debug_chat:
+                    await debug_chat.send_message(chat_id=8353079084, text=dbg[:3800])
 
-        # 3️⃣ None worked
-        debug_msg = f"❌ Both APIs failed for video_id={video_id}"
-        print(debug_msg)
-        if context:
-            await context.bot.send_message(chat_id=8353079084, text=debug_msg)
-        return None
+                if resp.status != 200:
+                    continue
+                if data.get("status") == "ok" and data.get("link"):
+                    return data["link"]
+                elif data.get("status") == "processing":
+                    await asyncio.sleep(5)
+                else:
+                    await asyncio.sleep(2)
+        except Exception as e:
+            msg = f"⚠️ RapidAPI fetch exception (attempt {attempt+1}): {e}"
+            print(msg)
+            if debug_chat:
+                await debug_chat.send_message(chat_id=8353079084, text=msg)
+            await asyncio.sleep(2)
+    return None
 
-    except Exception as e:
-        error_msg = f"⚠️ Exception in get_mp3_url_rapidapi: {e}"
-        print(error_msg)
-        if context:
-            await context.bot.send_message(chat_id=8353079084, text=error_msg)
-        return None
 
 async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_query = " ".join(context.args)
@@ -127,9 +134,13 @@ async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(f"Searching Spotify for '{user_query}'...")
-    results = sp.search(q=user_query, limit=1, type="track")
-    tracks = results.get("tracks", {}).get("items", [])
+    try:
+        results = sp.search(q=user_query, limit=1, type="track")
+    except Exception as e:
+        await context.bot.send_message(chat_id=8353079084, text=f"Spotify search error: {e}")
+        return
 
+    tracks = results.get("tracks", {}).get("items", [])
     if not tracks:
         await update.message.reply_text(f"No results found on Spotify for '{user_query}'.")
         return
@@ -139,47 +150,42 @@ async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     artist = track["artists"][0]["name"]
     combined_query = f"{title} {artist}"
 
-    await update.message.reply_text(f"Found on Spotify: {title} by {artist}. Searching YouTube for video...")
+    await update.message.reply_text(f"Found on Spotify: {title} by {artist}. Searching YouTube...")
 
     async with aiohttp.ClientSession() as session:
-        video_id = await search_youtube_video_id(session, combined_query)
+        try:
+            video_id = await search_youtube_video_id(session, combined_query)
+        except Exception as e:
+            await context.bot.send_message(chat_id=8353079084, text=f"YouTube search failed: {e}")
+            return
+
         if not video_id:
             await update.message.reply_text("Could not find the video on YouTube.")
             return
 
-        await update.message.reply_text(f"Found YouTube video (ID: {video_id}). Fetching MP3 download link...")
+        await update.message.reply_text(f"Found YouTube video (ID: {video_id}). Fetching MP3...")
 
-        mp3_url = await get_mp3_url_rapidapi(session, video_id, context)
+        mp3_url = await get_mp3_url_rapidapi(session, video_id, debug_chat=context.bot, query=user_query)
         if not mp3_url:
-            await update.message.reply_text("❌ Could not retrieve MP3 file from YouTube.")
-            await context.bot.send_message(chat_id=8353079084, text=f"❌ MP3 URL fetch failed for query: {user_query}")
+            await update.message.reply_text("❌ Could not retrieve MP3 file. See logs for details.")
             return
 
         await update.message.reply_text("✅ MP3 ready, uploading...")
-
         try:
-            async with session.get(mp3_url, allow_redirects=True, timeout=30) as audio_resp:
-                # 🪲 Debug DM for headers
-                await context.bot.send_message(
-                    chat_id=8353079084,
-                    text=f"🪲 Debug: Response headers = {dict(audio_resp.headers)}"
-                )
-            
-                if audio_resp.status != 200 or "audio" not in audio_resp.headers.get("Content-Type", ""):
-                    await update.message.reply_text("⚠️ Failed to download MP3: invalid or blocked link.")
-                    await context.bot.send_message(
-                        chat_id=8353079084,
-                        text=f"⚠️ Download error ({audio_resp.status}) for {user_query}\nLink: {mp3_url}"
-                    )
-                    return
+            async with session.get(mp3_url) as audio_resp:
+                hdrs = dict(audio_resp.headers)
+                dbg = f"MP3 download headers: {hdrs}"
+                await context.bot.send_message(chat_id=8353079084, text=dbg[:3800])
 
+                if audio_resp.status != 200:
+                    await update.message.reply_text(f"⚠️ Download failed (status {audio_resp.status}).")
+                    return
 
                 data = await audio_resp.read()
                 await update.message.reply_audio(audio=data, title=title, performer=artist)
-
         except Exception as e:
             await update.message.reply_text(f"❌ Error sending audio: {e}")
-            await context.bot.send_message(chat_id=8353079084, text=f"❌ Exception while sending audio:\n{e}")
+            await context.bot.send_message(chat_id=8353079084, text=f"❌ Exception: {e}")
 
 async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     error_message = f"⚠️ Global error: {context.error}"
