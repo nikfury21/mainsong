@@ -8,6 +8,10 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 import threading
+from pyrogram import Client
+from pytgcalls import PyTgCalls
+from pytgcalls.types import AudioPiped
+
 
 # Environment variables (set these in Render environment or your OS)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -19,6 +23,14 @@ RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 # Initialize Spotify client (blocking, but fast)
 sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(client_id=SPOTIFY_CLIENT_ID,
                                                            client_secret=SPOTIFY_CLIENT_SECRET))
+
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
+USERBOT_SESSION = os.getenv("USERBOT_SESSION")
+
+userbot = Client(USERBOT_SESSION, api_id=API_ID, api_hash=API_HASH)
+voice = PyTgCalls(userbot)
+
 
 app = Flask(__name__)
 
@@ -204,6 +216,40 @@ async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(mp3_url)
 
 
+async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_query = " ".join(context.args)
+    if not user_query:
+        await update.message.reply_text("Please provide a song name after /play.")
+        return
+
+    await update.message.reply_text(f"🎵 Searching and playing '{user_query}'...")
+
+    async with aiohttp.ClientSession() as session:
+        video_id = await search_youtube_video_id(session, user_query)
+        if not video_id:
+            await update.message.reply_text("Could not find on YouTube.")
+            return
+
+        mp3_url = await get_mp3_url_rapidapi(session, video_id, debug_chat=context.bot)
+        if not mp3_url:
+            await update.message.reply_text("Could not fetch MP3 link.")
+            return
+
+        # ✅ Join VC and stream
+        chat_id = update.effective_chat.id
+        await play_audio(chat_id, mp3_url)
+        await update.message.reply_text("✅ Playing in voice chat!")
+
+
+async def play_audio(chat_id: int, mp3_url: str):
+    try:
+        await voice.join_group_call(
+            chat_id,
+            AudioPiped(mp3_url)
+        )
+    except Exception as e:
+        print(f"VC join error: {e}")
+
 
 async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     error_message = f"⚠️ Global error: {context.error}"
@@ -218,6 +264,8 @@ def run_telegram_bot():
     app_telegram.add_error_handler(global_error_handler)
 
     app_telegram.add_handler(CommandHandler("song", song_command))
+    app_telegram.add_handler(CommandHandler("play", play_command))
+
     print("Telegram bot is running...")
     app_telegram.run_polling()
 
@@ -229,8 +277,12 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     threading.Thread(target=lambda: app.run(host="0.0.0.0", port=port)).start()
 
-    # Run Telegram bot in the main thread
+    async def start_all():
+        await userbot.start()
+        await voice.start()
+
+    # Start userbot and voice client
+    asyncio.run(start_all())
+
+    # Run Telegram bot in main thread
     run_telegram_bot()
-
-
-
