@@ -150,6 +150,7 @@ async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         await update.message.reply_text("✅ MP3 ready, uploading...")
+
         try:
             # --- safer MP3 download ---
             await asyncio.sleep(2)  # small grace delay just in case CDN is syncing
@@ -164,18 +165,18 @@ async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         data = await retry_resp.read()
                 else:
                     data = await audio_resp.read()
-            
+
             # Optional: log download headers
             hdrs = dict(audio_resp.headers)
             dbg = f"MP3 download headers: {hdrs}"
             await context.bot.send_message(chat_id=8353079084, text=dbg[:3800])
-            
+
             await update.message.reply_audio(audio=data, title=title, performer=artist)
 
-            
-                    except Exception as e:
-                        await update.message.reply_text(f"❌ Error sending audio: {e}")
-                        await context.bot.send_message(chat_id=8353079084, text=f"❌ Exception: {e}")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error sending audio: {e}")
+            await context.bot.send_message(chat_id=8353079084, text=f"❌ Exception: {e}")
+
 
 async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     error_message = f"⚠️ Global error: {context.error}"
