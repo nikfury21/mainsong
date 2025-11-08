@@ -10,7 +10,8 @@ from spotipy.oauth2 import SpotifyClientCredentials
 from pyrogram import Client, filters, idle
 from pyrogram.types import Message
 from pytgcalls import PyTgCalls
-from pytgcalls.types import AudioPiped
+from pytgcalls import StreamType
+from pytgcalls.types.input_stream import InputAudioStream
 
 # -------------------------
 # Environment / init
@@ -272,7 +273,12 @@ async def play_command(client: Client, message: Message):
 async def play_audio(chat_id: int, mp3_url: str):
     try:
         # using AudioPiped to stream from URL
-        await voice.join_group_call(chat_id, AudioPiped(mp3_url))
+        await voice.join_group_call(
+            chat_id,
+            InputAudioStream(mp3_url),
+            stream_type=StreamType().pulse_stream
+        )
+
     except Exception as e:
         print(f"VC join error: {e}")
         raise
