@@ -37,4 +37,4 @@ COPY . .
 EXPOSE 5000
 
 # ─── Set default command ───────────────────
-CMD ["python", "bot.py"]
+CMD ["python", "song.py"]
