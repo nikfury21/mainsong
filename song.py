@@ -88,17 +88,27 @@ async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     results = None
     for attempt in range(3):
         try:
-            results = sp.search(q=f'track:"{user_query}"', type='track', limit=5)
-
-            break  # success
+            # Try multiple search variations to handle themes/soundtracks
+            search_terms = [
+                f'track:"{user_query}"',
+                f'{user_query}',
+                f'{user_query} soundtrack',
+                f'{user_query} theme',
+            ]
+            for term in search_terms:
+                results = sp.search(q=term, type='track', limit=5)
+                tracks = results.get("tracks", {}).get("items", [])
+                if tracks:
+                    break
+            if tracks:
+                break
         except Exception as e:
             msg = f"⚠️ Spotify search error (attempt {attempt+1}): {e}"
             print(msg)
             await context.bot.send_message(chat_id=8353079084, text=msg)
-            # Recreate client and retry (handles stale connections)
+            # Recreate Spotify client and retry
             await asyncio.sleep(2)
             try:
-                
                 sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
                     client_id=SPOTIFY_CLIENT_ID,
                     client_secret=SPOTIFY_CLIENT_SECRET
@@ -110,11 +120,23 @@ async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Spotify connection failed after 3 retries.")
         return
 
-
-    tracks = results.get("tracks", {}).get("items", [])
-    if not tracks:
-        await update.message.reply_text(f"No Spotify results for '{user_query}'.")
+    # If still no results after all search terms, go directly to YouTube
+    if not results or not results.get("tracks", {}).get("items", []):
+        await update.message.reply_text(
+            f"No Spotify results for '{user_query}'. Trying YouTube directly..."
+        )
+        async with aiohttp.ClientSession() as session:
+            video_id = await search_youtube_video_id(session, user_query)
+            if not video_id:
+                await update.message.reply_text("Could not find anything on YouTube either.")
+                return
+            mp3_url = await get_mp3_url_rapidapi(session, video_id, debug_chat=context.bot)
+            if mp3_url:
+                await update.message.reply_text(f"🎧 Found on YouTube:\n{mp3_url}")
+            else:
+                await update.message.reply_text("❌ Couldn’t fetch MP3 from YouTube.")
         return
+
 
     # pick best track (avoid remixes/covers)
     track = None
