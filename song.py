@@ -294,22 +294,17 @@ async def main_loop():
     await _shutdown()
 
 if __name__ == "__main__":
-    # Start Flask web server in background thread for Render
-    t = threading.Thread(target=run_flask, daemon=True)
-    t.start()
-    log.info("Flask thread started.")
+    async def run_all():
+        # Start Flask inside async loop (non-blocking)
+        asyncio.create_task(asyncio.to_thread(run_flask))
+        log.info("Flask started inside event loop.")
+        await main_loop()
 
-    # Run main asyncio loop to start pyrogram clients and keep bot alive
     try:
-        asyncio.run(main_loop())
+        asyncio.run(run_all())
     except KeyboardInterrupt:
         log.info("KeyboardInterrupt received, shutting down...")
     except Exception as e:
         log.exception("Unhandled exception in main: %s", e)
     finally:
-        # best-effort cleanup
-        try:
-            asyncio.get_event_loop().run_until_complete(_shutdown())
-        except Exception:
-            pass
         log.info("Process exiting.")
