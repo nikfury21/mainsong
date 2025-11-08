@@ -294,17 +294,12 @@ async def main_loop():
     await _shutdown()
 
 if __name__ == "__main__":
-    async def run_all():
-        # Start Flask inside async loop (non-blocking)
-        asyncio.create_task(asyncio.to_thread(run_flask))
-        log.info("Flask started inside event loop.")
-        await main_loop()
+    import threading
 
-    try:
-        asyncio.run(run_all())
-    except KeyboardInterrupt:
-        log.info("KeyboardInterrupt received, shutting down...")
-    except Exception as e:
-        log.exception("Unhandled exception in main: %s", e)
-    finally:
-        log.info("Process exiting.")
+    def start_flask_background():
+        threading.Thread(target=run_flask, daemon=True).start()
+        log.info("🌐 Flask webserver started in background thread.")
+
+    async def run_all():
+        start_flask_background()
+        await main_loop()
