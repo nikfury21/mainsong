@@ -1,8 +1,9 @@
-python-telegram-bot
-spotipy
-aiohttp
-flask
-requests
-pyrogram
-tgcrypto
-pytgcalls
+python-telegram-bot==20.3
+spotipy==2.23.0
+aiohttp==3.8.4
+flask==2.3.3
+requests==2.31.0
+Pyrogram==2.0.41
+tgcrypto==1.4.3
+pytgcalls==2.1.0
+tgcalls==2.0.0
