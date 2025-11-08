@@ -293,13 +293,75 @@ async def main_loop():
     # idle exits on stop, then perform shutdown
     await _shutdown()
 
+# ================================
+#   Docker / Render-safe startup
+# ================================
+import threading
+import asyncio
+import signal
+import traceback
+
+def start_flask():
+    """Run Flask keepalive webserver in background thread."""
+    threading.Thread(target=run_flask, daemon=True).start()
+    log.info("🌐 Flask webserver started in background thread.")
+
+async def start_services():
+    """Start Pyrogram userbot + bot + PyTgCalls safely, and keep idle loop."""
+    try:
+        log.info("🚀 Initializing clients...")
+        await userbot.start()
+        log.info("[Userbot] connected.")
+        await call_py.start()
+        log.info("[PyTgCalls] ready.")
+        if bot:
+            await bot.start()
+            log.info("[Bot] started.")
+
+        # Background idle
+        log.info("✅ All clients started. Entering idle mode...")
+        await idle()
+
+    except Exception as e:
+        log.error("❌ Startup error: %s", e)
+        traceback.print_exc()
+    finally:
+        log.info("🔻 Shutting down...")
+        try:
+            await call_py.stop()
+        except Exception:
+            pass
+        try:
+            await userbot.stop()
+        except Exception:
+            pass
+        if bot:
+            try:
+                await bot.stop()
+            except Exception:
+                pass
+        log.info("🟢 Clean shutdown complete.")
+
+
+def main():
+    """Entry point for Docker / Render deployment."""
+    start_flask()  # non-blocking webserver thread
+    loop = asyncio.get_event_loop()
+
+    # handle shutdown signals gracefully
+    stop_event = asyncio.Event()
+
+    def stop_handler(*_):
+        loop.create_task(stop_event.set())
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop_handler)
+
+    # run startup + main service
+    loop.create_task(start_services())
+    loop.run_until_complete(stop_event.wait())
+    log.info("🛑 Received shutdown signal, exiting...")
+
 if __name__ == "__main__":
-    import threading
+    main()
 
-    def start_flask_background():
-        threading.Thread(target=run_flask, daemon=True).start()
-        log.info("🌐 Flask webserver started in background thread.")
-
-    async def run_all():
-        start_flask_background()
-        await main_loop()
