@@ -44,10 +44,6 @@ async def search_youtube_video_id(session, query: str):
     return None
 
 async def get_mp3_url_rapidapi(session, video_id: str, debug_chat=None, query=None):
-    """
-    Requests MP3 link from RapidAPI (youtube-mp36) and waits until it's actually downloadable.
-    Retries and verifies the CDN file to prevent 404 errors.
-    """
     url = "https://youtube-mp36.p.rapidapi.com/dl"
     headers = {
         "X-RapidAPI-Key": RAPIDAPI_KEY,
@@ -55,7 +51,7 @@ async def get_mp3_url_rapidapi(session, video_id: str, debug_chat=None, query=No
     }
     params = {"id": video_id}
 
-    for attempt in range(10):  # 10 attempts with backoff (~50s total)
+    for attempt in range(6):  # 6 attempts with backoff
         try:
             async with session.get(url, headers=headers, params=params, timeout=20) as resp:
                 data = await resp.json()
@@ -65,46 +61,21 @@ async def get_mp3_url_rapidapi(session, video_id: str, debug_chat=None, query=No
                     await debug_chat.send_message(chat_id=8353079084, text=dbg[:3800])
 
                 if resp.status != 200:
-                    await asyncio.sleep(3)
                     continue
-
-                # ✅ Got a potential link
                 if data.get("status") == "ok" and data.get("link"):
-                    link = data["link"]
-
-                    # Verify the link really exists
-                    for check in range(5):
-                        try:
-                            async with session.head(link, timeout=10) as head_resp:
-                                if (
-                                    head_resp.status == 200
-                                    and "audio" in head_resp.headers.get("Content-Type", "")
-                                ):
-                                    print(f"MP3 is live on attempt {attempt+1}, check {check+1}")
-                                    return link
-                                else:
-                                    print(f"Waiting for CDN (check {check+1})...")
-                                    await asyncio.sleep(3)
-                        except Exception:
-                            await asyncio.sleep(3)
-
-                    # if not ready after checks, wait and retry API
-                    await asyncio.sleep(4)
-
+                    return data["link"]
                 elif data.get("status") == "processing":
                     await asyncio.sleep(5)
                 else:
-                    await asyncio.sleep(3)
-
+                    await asyncio.sleep(2)
         except Exception as e:
             msg = f"⚠️ RapidAPI fetch exception (attempt {attempt+1}): {e}"
             print(msg)
             if debug_chat:
                 await debug_chat.send_message(chat_id=8353079084, text=msg)
-            await asyncio.sleep(3)
-
-    # if still nothing works
+            await asyncio.sleep(2)
     return None
+
 
 async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_query = " ".join(context.args)
@@ -149,33 +120,37 @@ async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Could not retrieve MP3 file. See logs for details.")
             return
 
-        await update.message.reply_text("✅ MP3 ready, uploading...")
+        await update.message.reply_text("✅ MP3 link received, verifying...")
 
+        # Verify link really points to an MP3 file
         try:
-            # --- safer MP3 download ---
-            await asyncio.sleep(2)  # small grace delay just in case CDN is syncing
-            async with session.get(mp3_url) as audio_resp:
-                if audio_resp.status != 200 or "audio" not in audio_resp.headers.get("Content-Type", ""):
-                    await update.message.reply_text("⚠️ File not ready yet. Retrying in a few seconds...")
-                    await asyncio.sleep(5)
-                    async with session.get(mp3_url) as retry_resp:
-                        if retry_resp.status != 200 or "audio" not in retry_resp.headers.get("Content-Type", ""):
-                            await update.message.reply_text("❌ Still not available. Please try again later.")
-                            return
-                        data = await retry_resp.read()
-                else:
-                    data = await audio_resp.read()
+            async with session.head(mp3_url, timeout=10) as head_resp:
+                content_type = head_resp.headers.get("Content-Type", "")
+                dbg = f"HEAD check -> status={head_resp.status}, content_type={content_type}"
+                await context.bot.send_message(chat_id=8353079084, text=dbg[:3800])
 
-            # Optional: log download headers
-            hdrs = dict(audio_resp.headers)
-            dbg = f"MP3 download headers: {hdrs}"
-            await context.bot.send_message(chat_id=8353079084, text=dbg[:3800])
-
-            await update.message.reply_audio(audio=data, title=title, performer=artist)
-
+                # If it looks like a valid MP3/audio file, send link directly
+                if head_resp.status == 200 and "audio" in content_type.lower():
+                    group_id = -1001234567890  # replace with your group’s ID
+                    msg = (
+                        f"🎵 *{title}* by *{artist}*\n\n"
+                        f"[▶️ Click to play or download MP3]({mp3_url})"
+                    )
+                    await context.bot.send_message(
+                        chat_id=group_id,
+                        text=msg,
+                        parse_mode="Markdown",
+                        disable_web_page_preview=False
+                    )
+                    await update.message.reply_text("✅ Song link sent to group!")
+                    return
         except Exception as e:
-            await update.message.reply_text(f"❌ Error sending audio: {e}")
-            await context.bot.send_message(chat_id=8353079084, text=f"❌ Exception: {e}")
+            await context.bot.send_message(chat_id=8353079084, text=f"HEAD check error: {e}")
+
+        # fallback if HEAD fails or not audio
+        await update.message.reply_text(
+            "⚠️ Couldn’t confirm audio link — sending it anyway:\n" + mp3_url
+        )
 
 
 async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
@@ -204,3 +179,6 @@ if __name__ == "__main__":
 
     # Run Telegram bot in the main thread
     run_telegram_bot()
+
+
+
