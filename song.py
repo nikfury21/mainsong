@@ -84,21 +84,50 @@ async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(f"Searching Spotify for '{user_query}'...")
-    try:
-        results = sp.search(q=user_query, limit=1, type="track")
-    except Exception as e:
-        await context.bot.send_message(chat_id=8353079084, text=f"Spotify search error: {e}")
+    results = None
+    for attempt in range(3):
+        try:
+            results = sp.search(q=f'track:"{user_query}"', type='track', limit=5)
+
+            break  # success
+        except Exception as e:
+            msg = f"⚠️ Spotify search error (attempt {attempt+1}): {e}"
+            print(msg)
+            await context.bot.send_message(chat_id=8353079084, text=msg)
+            # Recreate client and retry (handles stale connections)
+            await asyncio.sleep(2)
+            try:
+                global sp
+                sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
+                    client_id=SPOTIFY_CLIENT_ID,
+                    client_secret=SPOTIFY_CLIENT_SECRET
+                ))
+            except Exception as e2:
+                await context.bot.send_message(chat_id=8353079084, text=f"Reinit error: {e2}")
+                await asyncio.sleep(2)
+    else:
+        await update.message.reply_text("❌ Spotify connection failed after 3 retries.")
         return
+
 
     tracks = results.get("tracks", {}).get("items", [])
     if not tracks:
-        await update.message.reply_text(f"No results found on Spotify for '{user_query}'.")
+        await update.message.reply_text(f"No Spotify results for '{user_query}'.")
         return
 
-    track = tracks[0]
+    # pick best track (avoid remixes/covers)
+    track = None
+    for t in tracks:
+        if "remix" not in t["name"].lower() and "cover" not in t["name"].lower():
+            track = t
+            break
+    if not track:
+        track = tracks[0]
+
     title = track["name"]
     artist = track["artists"][0]["name"]
-    combined_query = f"{title} {artist}"
+    combined_query = f"{title} {artist} official audio"
+
 
     await update.message.reply_text(f"Found on Spotify: {title} by {artist}. Searching YouTube...")
 
