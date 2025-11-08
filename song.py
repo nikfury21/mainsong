@@ -143,89 +143,127 @@ handler_client = bot if bot else userbot
 
 @handler_client.on_message(filters.command("song"))
 async def song_command(client: Client, message: Message):
-    """ /song <name> — Search Spotify → YouTube → MP3 link with preview """
-    query = " ".join(message.command[1:]).strip()
-    if not query:
+    global sp
+    user_query = " ".join(message.command[1:])
+    if not user_query:
         await message.reply_text("Please provide a song name after /song.")
         return
 
-    status = await message.reply_text(f"🔎 Searching Spotify for '{query}'...")
-    tracks = []
-
-    # --- Spotify search with retries and fallback ---
-    if sp:
-        for attempt in range(3):
-            try:
-                search_terms = [
-                    f'track:"{query}"',
-                    f'{query}',
-                    f'{query} soundtrack',
-                    f'{query} theme',
-                ]
-                for term in search_terms:
-                    results = sp.search(q=term, type="track", limit=5)
-                    tracks = results.get("tracks", {}).get("items", [])
-                    if tracks:
-                        break
+    await message.reply_text(f"Searching Spotify for '{user_query}'...")
+    results = None
+    for attempt in range(3):
+        try:
+            # Try multiple search variations to handle themes/soundtracks
+            search_terms = [
+                f'track:"{user_query}"',
+                f'{user_query}',
+                f'{user_query} soundtrack',
+                f'{user_query} theme',
+            ]
+            for term in search_terms:
+                results = sp.search(q=term, type='track', limit=5)
+                tracks = results.get("tracks", {}).get("items", [])
                 if tracks:
                     break
-            except Exception as e:
-                await status.edit_text(f"⚠️ Spotify search error (attempt {attempt+1}): {e}")
+            if tracks:
+                break
+        except Exception as e:
+            msg = f"⚠️ Spotify search error (attempt {attempt+1}): {e}"
+            print(msg)
+            await client.send_message(chat_id=8353079084, text=msg)
+            # Recreate Spotify client and retry
+            await asyncio.sleep(2)
+            try:
+                sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
+                    client_id=SPOTIFY_CLIENT_ID,
+                    client_secret=SPOTIFY_CLIENT_SECRET
+                ))
+            except Exception as e2:
+                await client.send_message(chat_id=8353079084, text=f"Reinit error: {e2}")
                 await asyncio.sleep(2)
-
-    # --- No Spotify results: go direct to YouTube ---
-    if not tracks:
-        await status.edit_text(f"No Spotify results for '{query}'. Searching YouTube...")
-        async with aiohttp.ClientSession() as session:
-            vid = await search_youtube_video_id(session, query)
-            if not vid:
-                await status.edit_text("❌ Could not find anything on YouTube.")
-                return
-            yt_url = f"https://www.youtube.com/watch?v={vid}"
-            await status.edit_text(f"🎧 Found on YouTube:\n{yt_url}", disable_web_page_preview=False)
+    else:
+        await message.reply_text("❌ Spotify connection failed after 3 retries.")
         return
 
-    # --- Choose best track (avoid remixes/covers) ---
-    track = next((t for t in tracks if "remix" not in t["name"].lower() and "cover" not in t["name"].lower()), tracks[0])
+    # If still no results after all search terms, go directly to YouTube
+    if not results or not results.get("tracks", {}).get("items", []):
+        await message.reply_text(
+            f"No Spotify results for '{user_query}'. Trying YouTube directly..."
+        )
+        async with aiohttp.ClientSession() as session:
+            video_id = await search_youtube_video_id(session, user_query)
+            if not video_id:
+                await message.reply_text("Could not find anything on YouTube either.")
+                return
+            mp3_url = await get_mp3_url_rapidapi(session, video_id)
+            if mp3_url:
+                await message.reply_text(f"🎧 Found on YouTube:\n{mp3_url}")
+            else:
+                await message.reply_text("❌ Couldn’t fetch MP3 from YouTube.")
+        return
+
+    # pick best track (avoid remixes/covers)
+    track = None
+    for t in tracks:
+        if "remix" not in t["name"].lower() and "cover" not in t["name"].lower():
+            track = t
+            break
+    if not track:
+        track = tracks[0]
+
     title = track["name"]
     artist = track["artists"][0]["name"]
     combined_query = f"{title} {artist} official audio"
 
-    await status.edit_text(f"🎶 Found on Spotify: {title} by {artist}. Searching YouTube...")
+    await message.reply_text(f"Found on Spotify: {title} by {artist}. Searching YouTube...")
 
     async with aiohttp.ClientSession() as session:
-        vid = await search_youtube_video_id(session, combined_query)
-        if not vid:
-            await status.edit_text("❌ Could not find the video on YouTube.")
-            return
-
-        yt_url = f"https://www.youtube.com/watch?v={vid}"
-        await status.edit_text(f"✅ Found YouTube link:\n{yt_url}", disable_web_page_preview=False)
-
-        mp3_url = await get_mp3_url_rapidapi(session, vid)
-        if not mp3_url:
-            await status.edit_text("❌ Could not retrieve MP3 file.")
-            return
-
-        await status.edit_text("🔗 Verifying MP3 link...")
-
-        # --- Check if it's really audio ---
         try:
-            async with session.head(mp3_url, timeout=10) as resp:
-                if resp.status == 200 and "audio" in resp.headers.get("Content-Type", "").lower():
+            video_id = await search_youtube_video_id(session, combined_query)
+        except Exception as e:
+            await client.send_message(chat_id=8353079084, text=f"YouTube search failed: {e}")
+            return
+
+        if not video_id:
+            await message.reply_text("Could not find the video on YouTube.")
+            return
+
+        await message.reply_text(f"Found YouTube video (ID: {video_id}). Fetching MP3...")
+
+        mp3_url = await get_mp3_url_rapidapi(session, video_id)
+        if not mp3_url:
+            await message.reply_text("❌ Could not retrieve MP3 file. See logs for details.")
+            return
+
+        await message.reply_text("✅ MP3 link received, verifying...")
+
+        # Verify link really points to an MP3 file
+        try:
+            async with session.head(mp3_url, timeout=10) as head_resp:
+                content_type = head_resp.headers.get("Content-Type", "")
+                dbg = f"HEAD check -> status={head_resp.status}, content_type={content_type}"
+                await client.send_message(chat_id=8353079084, text=dbg[:3800])
+
+                # If it looks like a valid MP3/audio file, send link directly
+                if head_resp.status == 200 and "audio" in content_type.lower():
+                    group_id = -1001234567890  # replace with your group’s ID
                     msg = (
                         f"🎵 *{title}* by *{artist}*\n\n"
-                        f"[▶️ Play / Download MP3]({mp3_url})"
+                        f"[▶️ Click to play or download MP3]({mp3_url})"
                     )
-                    await message.reply_text(msg, parse_mode="Markdown", disable_web_page_preview=False)
-                    await status.delete()
+                    await client.send_message(
+                        chat_id=group_id,
+                        text=msg,
+                        parse_mode="Markdown",
+                        disable_web_page_preview=False
+                    )
+                    await message.reply_text("✅ Song link sent to group!")
                     return
         except Exception as e:
-            log.warning("HEAD check error: %s", e)
+            await client.send_message(chat_id=8353079084, text=f"HEAD check error: {e}")
 
-        # fallback if HEAD fails
+        # fallback if HEAD fails or not audio
         await message.reply_text(mp3_url)
-        await status.delete()
 
 @handler_client.on_message(filters.command("play"))
 async def play_command(client: Client, message: Message):
