@@ -1,44 +1,62 @@
-
+# error_fixed.py
 import os
 import aiohttp
 import asyncio
+import threading
 from flask import Flask
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
-import threading
-from pyrogram import Client
+
+from pyrogram import Client, filters, idle
+from pyrogram.types import Message
 from pytgcalls import PyTgCalls
 from pytgcalls.types import AudioPiped
 
-
-# Environment variables (set these in Render environment or your OS)
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
-SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
+# -------------------------
+# Environment / init
+# -------------------------
+TELEGRAM_API_ID = int(os.getenv("API_ID", "0"))
+TELEGRAM_API_HASH = os.getenv("API_HASH")
+BOT_TOKEN = os.getenv("BOT_TOKEN")            # optional if you run only userbot-driven commands
+USERBOT_SESSION = os.getenv("USERBOT_SESSION")  # session string for userbot (required for PyTgCalls)
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
+SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 
-# Initialize Spotify client (blocking, but fast)
-sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(client_id=SPOTIFY_CLIENT_ID,
-                                                           client_secret=SPOTIFY_CLIENT_SECRET))
+if not (TELEGRAM_API_ID and TELEGRAM_API_HASH and USERBOT_SESSION):
+    raise RuntimeError("Please set API_ID, API_HASH and USERBOT_SESSION in environment.")
 
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
-USERBOT_SESSION = os.getenv("USERBOT_SESSION")
+# Spotipy client (sync)
+sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
+    client_id=SPOTIFY_CLIENT_ID,
+    client_secret=SPOTIFY_CLIENT_SECRET
+))
 
-userbot = Client(USERBOT_SESSION, api_id=API_ID, api_hash=API_HASH)
+# Pyrogram bot client (bot account) and userbot client (for voice)
+# Use two separate Pyrogram Clients: one for bot commands, one for user account (PyTgCalls uses user account)
+bot = Client("bot_account", api_id=TELEGRAM_API_ID, api_hash=TELEGRAM_API_HASH, bot_token=BOT_TOKEN)
+userbot = Client("userbot_account", session_string=USERBOT_SESSION, api_id=TELEGRAM_API_ID, api_hash=TELEGRAM_API_HASH)
+
+# PyTgCalls voice client attached to userbot
 voice = PyTgCalls(userbot)
 
-
+# Flask app (kept as requested) — will run in a background thread
 app = Flask(__name__)
 
 @app.route("/")
 def index():
     return "deployed"
 
-async def search_youtube_video_id(session, query: str):
+def run_flask():
+    port = int(os.getenv("PORT", 5000))
+    # Use threaded=True so Flask does not block other threads
+    app.run(host="0.0.0.0", port=port, threaded=True)
+
+# -------------------------
+# YouTube / RapidAPI helpers
+# -------------------------
+async def search_youtube_video_id(session: aiohttp.ClientSession, query: str):
     url = "https://www.googleapis.com/youtube/v3/search"
     params = {
         "part": "snippet",
@@ -55,7 +73,7 @@ async def search_youtube_video_id(session, query: str):
                 return items[0]["id"]["videoId"]
     return None
 
-async def get_mp3_url_rapidapi(session, video_id: str, debug_chat=None, query=None):
+async def get_mp3_url_rapidapi(session: aiohttp.ClientSession, video_id: str, debug_chat=None, query=None):
     url = "https://youtube-mp36.p.rapidapi.com/dl"
     headers = {
         "X-RapidAPI-Key": RAPIDAPI_KEY,
@@ -67,12 +85,16 @@ async def get_mp3_url_rapidapi(session, video_id: str, debug_chat=None, query=No
         try:
             async with session.get(url, headers=headers, params=params, timeout=20) as resp:
                 data = await resp.json()
-                dbg = f"[Attempt {attempt+1}] RapidAPI status={resp.status}, data={data}"
+                dbg = f"[Attempt {attempt+1}] RapidAPI status={resp.status}, data_keys={list(data.keys())}"
                 print(dbg)
                 if debug_chat:
-                    await debug_chat.send_message(chat_id=8353079084, text=dbg[:3800])
+                    try:
+                        await debug_chat.send_message(chat_id=debug_chat.chat.id, text=dbg[:3800])
+                    except Exception:
+                        pass
 
                 if resp.status != 200:
+                    await asyncio.sleep(2)
                     continue
                 if data.get("status") == "ok" and data.get("link"):
                     return data["link"]
@@ -84,23 +106,30 @@ async def get_mp3_url_rapidapi(session, video_id: str, debug_chat=None, query=No
             msg = f"⚠️ RapidAPI fetch exception (attempt {attempt+1}): {e}"
             print(msg)
             if debug_chat:
-                await debug_chat.send_message(chat_id=8353079084, text=msg)
+                try:
+                    await debug_chat.send_message(chat_id=debug_chat.chat.id, text=msg)
+                except Exception:
+                    pass
             await asyncio.sleep(2)
     return None
 
-
-async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# -------------------------
+# Bot command handlers (Pyrogram)
+# -------------------------
+@bot.on_message(filters.command("song"))
+async def song_command(client: Client, message: Message):
+    """/song <query> — search spotify, fallback to YouTube, reply mp3 link (same logic as original)"""
     global sp
-    user_query = " ".join(context.args)
+    user_query = " ".join(message.command[1:]).strip()
     if not user_query:
-        await update.message.reply_text("Please provide a song name after /song.")
+        await message.reply_text("Please provide a song name after /song.")
         return
 
-    await update.message.reply_text(f"Searching Spotify for '{user_query}'...")
+    await message.reply_text(f"Searching Spotify for '{user_query}'...")
     results = None
+    tracks = []
     for attempt in range(3):
         try:
-            # Try multiple search variations to handle themes/soundtracks
             search_terms = [
                 f'track:"{user_query}"',
                 f'{user_query}',
@@ -117,8 +146,7 @@ async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             msg = f"⚠️ Spotify search error (attempt {attempt+1}): {e}"
             print(msg)
-            await context.bot.send_message(chat_id=8353079084, text=msg)
-            # Recreate Spotify client and retry
+            # attempt to reinit spotify client (sync)
             await asyncio.sleep(2)
             try:
                 sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
@@ -126,31 +154,28 @@ async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     client_secret=SPOTIFY_CLIENT_SECRET
                 ))
             except Exception as e2:
-                await context.bot.send_message(chat_id=8353079084, text=f"Reinit error: {e2}")
+                print(f"Reinit spotify failed: {e2}")
                 await asyncio.sleep(2)
     else:
-        await update.message.reply_text("❌ Spotify connection failed after 3 retries.")
+        await message.reply_text("❌ Spotify connection failed after 3 retries.")
         return
 
-    # If still no results after all search terms, go directly to YouTube
-    if not results or not results.get("tracks", {}).get("items", []):
-        await update.message.reply_text(
-            f"No Spotify results for '{user_query}'. Trying YouTube directly..."
-        )
+    # If no spotify results, go to YouTube directly
+    if not results or not tracks:
+        await message.reply_text(f"No Spotify results for '{user_query}'. Trying YouTube directly...")
         async with aiohttp.ClientSession() as session:
             video_id = await search_youtube_video_id(session, user_query)
             if not video_id:
-                await update.message.reply_text("Could not find anything on YouTube either.")
+                await message.reply_text("Could not find anything on YouTube either.")
                 return
-            mp3_url = await get_mp3_url_rapidapi(session, video_id, debug_chat=context.bot)
+            mp3_url = await get_mp3_url_rapidapi(session, video_id, debug_chat=message)
             if mp3_url:
-                await update.message.reply_text(f"🎧 Found on YouTube:\n{mp3_url}")
+                await message.reply_text(f"🎧 Found on YouTube:\n{mp3_url}")
             else:
-                await update.message.reply_text("❌ Couldn’t fetch MP3 from YouTube.")
+                await message.reply_text("❌ Couldn’t fetch MP3 from YouTube.")
         return
 
-
-    # pick best track (avoid remixes/covers)
+    # choose best track (avoid remixes/covers)
     track = None
     for t in tracks:
         if "remix" not in t["name"].lower() and "cover" not in t["name"].lower():
@@ -163,126 +188,133 @@ async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     artist = track["artists"][0]["name"]
     combined_query = f"{title} {artist} official audio"
 
-
-    await update.message.reply_text(f"Found on Spotify: {title} by {artist}. Searching YouTube...")
+    await message.reply_text(f"Found on Spotify: {title} by {artist}. Searching YouTube...")
 
     async with aiohttp.ClientSession() as session:
         try:
             video_id = await search_youtube_video_id(session, combined_query)
         except Exception as e:
-            await context.bot.send_message(chat_id=8353079084, text=f"YouTube search failed: {e}")
+            # send to bot owner or log (best-effort)
+            print(f"YouTube search failed: {e}")
+            await message.reply_text("YouTube search failed, try again later.")
             return
 
         if not video_id:
-            await update.message.reply_text("Could not find the video on YouTube.")
+            await message.reply_text("Could not find the video on YouTube.")
             return
 
-        await update.message.reply_text(f"Found YouTube video (ID: {video_id}). Fetching MP3...")
+        await message.reply_text(f"Found YouTube video (ID: {video_id}). Fetching MP3...")
 
-        mp3_url = await get_mp3_url_rapidapi(session, video_id, debug_chat=context.bot, query=user_query)
+        mp3_url = await get_mp3_url_rapidapi(session, video_id, debug_chat=message, query=user_query)
         if not mp3_url:
-            await update.message.reply_text("❌ Could not retrieve MP3 file. See logs for details.")
+            await message.reply_text("❌ Could not retrieve MP3 file. See logs for details.")
             return
 
-        await update.message.reply_text("✅ MP3 link received, verifying...")
+        await message.reply_text("✅ MP3 link received, verifying...")
 
         # Verify link really points to an MP3 file
         try:
             async with session.head(mp3_url, timeout=10) as head_resp:
                 content_type = head_resp.headers.get("Content-Type", "")
                 dbg = f"HEAD check -> status={head_resp.status}, content_type={content_type}"
-                await context.bot.send_message(chat_id=8353079084, text=dbg[:3800])
+                print(dbg)
 
-                # If it looks like a valid MP3/audio file, send link directly
                 if head_resp.status == 200 and "audio" in content_type.lower():
-                    group_id = -1001234567890  # replace with your group’s ID
+                    group_id = int(os.getenv("TARGET_GROUP_ID", "-1001234567890"))  # replace with your group id or env
                     msg = (
                         f"🎵 *{title}* by *{artist}*\n\n"
                         f"[▶️ Click to play or download MP3]({mp3_url})"
                     )
-                    await context.bot.send_message(
-                        chat_id=group_id,
-                        text=msg,
-                        parse_mode="Markdown",
-                        disable_web_page_preview=False
-                    )
-                    await update.message.reply_text("✅ Song link sent to group!")
-                    return
+                    # send to target group (if BOT_TOKEN is set and bot is in group). If not, this will raise.
+                    try:
+                        await client.send_message(chat_id=group_id, text=msg, parse_mode="markdown", disable_web_page_preview=False)
+                        await message.reply_text("✅ Song link sent to group!")
+                        return
+                    except Exception as e:
+                        print(f"Failed to send to group: {e}")
+                        # fallback to replying with link to the user
+                else:
+                    print("HEAD check suggests not audio or failed")
         except Exception as e:
-            await context.bot.send_message(chat_id=8353079084, text=f"HEAD check error: {e}")
+            print(f"HEAD check error: {e}")
 
-        # fallback if HEAD fails or not audio
-        # fallback if HEAD fails or not audio — send MP3 link only
-        await update.message.reply_text(mp3_url)
+        # fallback: send mp3 link in chat
+        await message.reply_text(mp3_url)
 
-
-async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_query = " ".join(context.args)
+@bot.on_message(filters.command("play"))
+async def play_command(client: Client, message: Message):
+    user_query = " ".join(message.command[1:]).strip()
     if not user_query:
-        await update.message.reply_text("Please provide a song name after /play.")
+        await message.reply_text("Please provide a song name after /play.")
         return
 
-    await update.message.reply_text(f"🎵 Searching and playing '{user_query}'...")
+    await message.reply_text(f"🎵 Searching and playing '{user_query}'...")
 
     async with aiohttp.ClientSession() as session:
         video_id = await search_youtube_video_id(session, user_query)
         if not video_id:
-            await update.message.reply_text("Could not find on YouTube.")
+            await message.reply_text("Could not find on YouTube.")
             return
 
-        mp3_url = await get_mp3_url_rapidapi(session, video_id, debug_chat=context.bot)
+        mp3_url = await get_mp3_url_rapidapi(session, video_id, debug_chat=message)
         if not mp3_url:
-            await update.message.reply_text("Could not fetch MP3 link.")
+            await message.reply_text("Could not fetch MP3 link.")
             return
 
-        # ✅ Join VC and stream
-        chat_id = update.effective_chat.id
-        await play_audio(chat_id, mp3_url)
-        await update.message.reply_text("✅ Playing in voice chat!")
-
+        # Join voice chat and stream
+        chat_id = message.chat.id
+        try:
+            await play_audio(chat_id, mp3_url)
+            await message.reply_text("✅ Playing in voice chat!")
+        except Exception as e:
+            await message.reply_text(f"❌ Failed to join voice chat: {e}")
 
 async def play_audio(chat_id: int, mp3_url: str):
     try:
-        await voice.join_group_call(
-            chat_id,
-            AudioPiped(mp3_url)
-        )
+        # using AudioPiped to stream from URL
+        await voice.join_group_call(chat_id, AudioPiped(mp3_url))
     except Exception as e:
         print(f"VC join error: {e}")
+        raise
 
+# -------------------------
+# Startup / main
+# -------------------------
+async def main():
+    # start userbot (required for PyTgCalls)
+    print("Starting userbot...")
+    await userbot.start()
+    print("Starting PyTgCalls voice client...")
+    await voice.start()
+    print("Starting bot client...")
+    await bot.start()
+    print("✅ Bot and voice client started. Ready.")
 
-async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    error_message = f"⚠️ Global error: {context.error}"
-    print(error_message)
-    try:
-        await context.bot.send_message(chat_id=8353079084, text=error_message)
-    except Exception:
-        pass
-
-def run_telegram_bot():
-    app_telegram = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app_telegram.add_error_handler(global_error_handler)
-
-    app_telegram.add_handler(CommandHandler("song", song_command))
-    app_telegram.add_handler(CommandHandler("play", play_command))
-
-    print("Telegram bot is running...")
-    app_telegram.run_polling()
-
-import threading
-import os
+    # keep running
+    await idle()  # waits until Ctrl+C or stop
 
 if __name__ == "__main__":
-    # Start Flask server in a separate thread
-    port = int(os.getenv("PORT", 5000))
-    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=port)).start()
+    # Start Flask in a background thread (so we satisfy platforms that expect an HTTP endpoint)
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    print("Flask server started in background thread.")
 
-    async def start_all():
-        await userbot.start()
-        await voice.start()
-
-    # Start userbot and voice client
-    asyncio.run(start_all())
-
-    # Run Telegram bot in main thread
-    run_telegram_bot()
+    # Run asyncio main that starts pyrogram clients and voice
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Shutting down...")
+    finally:
+        # best-effort shutdown
+        try:
+            asyncio.get_event_loop().run_until_complete(voice.stop())
+        except Exception:
+            pass
+        try:
+            userbot.stop()
+        except Exception:
+            pass
+        try:
+            bot.stop()
+        except Exception:
+            pass
