@@ -1,4 +1,4 @@
-# FrozenGram helper (your repo)
+# FrozenGram helper
 git+https://github.com/prashantsahlot/FrozenGram.git
 
 # voice / playback / yt
@@ -16,6 +16,11 @@ aiofiles
 # telegram crypto + client
 tgcrypto==1.2.5
 pyrogram==2.0.41
+python-telegram-bot==20.5
+
+# spotify / youtube
+spotipy
+pytz
 
 # data, db, utils
 isodate
@@ -25,5 +30,3 @@ python-dotenv
 asyncpg
 pymongo
 gender-guesser
-python-telegram-bot==20.5
-
