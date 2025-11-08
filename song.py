@@ -44,6 +44,10 @@ async def search_youtube_video_id(session, query: str):
     return None
 
 async def get_mp3_url_rapidapi(session, video_id: str, debug_chat=None, query=None):
+    """
+    Requests MP3 link from RapidAPI (youtube-mp36) and waits until it's actually downloadable.
+    Retries and verifies the CDN file to prevent 404 errors.
+    """
     url = "https://youtube-mp36.p.rapidapi.com/dl"
     headers = {
         "X-RapidAPI-Key": RAPIDAPI_KEY,
@@ -51,7 +55,7 @@ async def get_mp3_url_rapidapi(session, video_id: str, debug_chat=None, query=No
     }
     params = {"id": video_id}
 
-    for attempt in range(6):  # 6 attempts with backoff
+    for attempt in range(10):  # 10 attempts with backoff (~50s total)
         try:
             async with session.get(url, headers=headers, params=params, timeout=20) as resp:
                 data = await resp.json()
@@ -61,21 +65,46 @@ async def get_mp3_url_rapidapi(session, video_id: str, debug_chat=None, query=No
                     await debug_chat.send_message(chat_id=8353079084, text=dbg[:3800])
 
                 if resp.status != 200:
+                    await asyncio.sleep(3)
                     continue
+
+                # ✅ Got a potential link
                 if data.get("status") == "ok" and data.get("link"):
-                    return data["link"]
+                    link = data["link"]
+
+                    # Verify the link really exists
+                    for check in range(5):
+                        try:
+                            async with session.head(link, timeout=10) as head_resp:
+                                if (
+                                    head_resp.status == 200
+                                    and "audio" in head_resp.headers.get("Content-Type", "")
+                                ):
+                                    print(f"MP3 is live on attempt {attempt+1}, check {check+1}")
+                                    return link
+                                else:
+                                    print(f"Waiting for CDN (check {check+1})...")
+                                    await asyncio.sleep(3)
+                        except Exception:
+                            await asyncio.sleep(3)
+
+                    # if not ready after checks, wait and retry API
+                    await asyncio.sleep(4)
+
                 elif data.get("status") == "processing":
                     await asyncio.sleep(5)
                 else:
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(3)
+
         except Exception as e:
             msg = f"⚠️ RapidAPI fetch exception (attempt {attempt+1}): {e}"
             print(msg)
             if debug_chat:
                 await debug_chat.send_message(chat_id=8353079084, text=msg)
-            await asyncio.sleep(2)
-    return None
+            await asyncio.sleep(3)
 
+    # if still nothing works
+    return None
 
 async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_query = " ".join(context.args)
@@ -122,20 +151,31 @@ async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text("✅ MP3 ready, uploading...")
         try:
+            # --- safer MP3 download ---
+            await asyncio.sleep(2)  # small grace delay just in case CDN is syncing
             async with session.get(mp3_url) as audio_resp:
-                hdrs = dict(audio_resp.headers)
-                dbg = f"MP3 download headers: {hdrs}"
-                await context.bot.send_message(chat_id=8353079084, text=dbg[:3800])
+                if audio_resp.status != 200 or "audio" not in audio_resp.headers.get("Content-Type", ""):
+                    await update.message.reply_text("⚠️ File not ready yet. Retrying in a few seconds...")
+                    await asyncio.sleep(5)
+                    async with session.get(mp3_url) as retry_resp:
+                        if retry_resp.status != 200 or "audio" not in retry_resp.headers.get("Content-Type", ""):
+                            await update.message.reply_text("❌ Still not available. Please try again later.")
+                            return
+                        data = await retry_resp.read()
+                else:
+                    data = await audio_resp.read()
+            
+            # Optional: log download headers
+            hdrs = dict(audio_resp.headers)
+            dbg = f"MP3 download headers: {hdrs}"
+            await context.bot.send_message(chat_id=8353079084, text=dbg[:3800])
+            
+            await update.message.reply_audio(audio=data, title=title, performer=artist)
 
-                if audio_resp.status != 200:
-                    await update.message.reply_text(f"⚠️ Download failed (status {audio_resp.status}).")
-                    return
-
-                data = await audio_resp.read()
-                await update.message.reply_audio(audio=data, title=title, performer=artist)
-        except Exception as e:
-            await update.message.reply_text(f"❌ Error sending audio: {e}")
-            await context.bot.send_message(chat_id=8353079084, text=f"❌ Exception: {e}")
+            
+                    except Exception as e:
+                        await update.message.reply_text(f"❌ Error sending audio: {e}")
+                        await context.bot.send_message(chat_id=8353079084, text=f"❌ Exception: {e}")
 
 async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     error_message = f"⚠️ Global error: {context.error}"
