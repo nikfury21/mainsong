@@ -200,9 +200,9 @@ async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=8353079084, text=f"HEAD check error: {e}")
 
         # fallback if HEAD fails or not audio
-        await update.message.reply_text(
-            "⚠️ Couldn’t confirm audio link — sending it anyway:\n" + mp3_url
-        )
+        # fallback if HEAD fails or not audio — send MP3 link only
+        await update.message.reply_text(mp3_url)
+
 
 
 async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
