@@ -132,14 +132,6 @@ async def ping_userbot(_, message: Message):
     # a simple check on userbot to ensure user account is running
     await message.reply_text("userbot is online ✅")
 
-@userbot.on_message(filters.command("song"))
-async def song_command_userbot(_, message: Message):
-    """Allow using /song from userbot account (if desired). Mirror of bot handler."""
-    # simply forward to play flow using same logic as bot below
-    await message.reply_text("Use the bot account to run /song (if available).")
-
-# We'll register handlers on `bot` if bot exists, otherwise on userbot (fallback)
-handler_client = bot if bot else userbot
 
 @handler_client.on_message(filters.command("song"))
 async def song_command(client: Client, message: Message):
