@@ -335,7 +335,7 @@ async def play_command(client: Client, message: Message):
     chat_id = message.chat.id
 
     # --- Check if a song is already playing ---
-    active_chats = [x.chat_id for x in call_py.active_calls]
+    active_chats = list(call_py.calls.keys())
     if chat_id in active_chats:
         song_data = {
             "title": query,
