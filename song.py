@@ -474,16 +474,28 @@ async def handle_next_in_queue(chat_id: int):
     if chat_id in music_queue and music_queue[chat_id]:
         next_song = music_queue[chat_id].pop(0)
         try:
+            # Leave and rejoin the VC before playing next song
+            if hasattr(call_py, "stop_stream"):
+                await call_py.stop_stream(chat_id)
+            elif hasattr(call_py, "leave_call"):
+                await call_py.leave_call(chat_id)
+            else:
+                await call_py.stop(chat_id)
+
+            await asyncio.sleep(1.5)  # small delay for clean reconnect
+
             await call_py.play(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
+
             caption = (
                 "<blockquote>"
-                "<b>🎧 <u>hulalala Streaming (Local Playback)</u></b>\n\n"
+                "<b>🎧 <u>hulalala Streaming (Auto Next)</u></b>\n\n"
                 f"<b>❍ Title:</b> <i>{next_song['title']}</i>\n"
                 f"<b>❍ Requested by:</b> "
                 f"<a href='tg://user?id={next_song['user'].id}'>"
                 f"<u>{next_song['user'].first_name}</u></a>"
                 "</blockquote>"
             )
+
             bar = get_progress_bar(0, next_song["duration"])
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
@@ -494,6 +506,7 @@ async def handle_next_in_queue(chat_id: int):
             thumb = f"https://img.youtube.com/vi/{next_song['vid']}/hqdefault.jpg"
             msg = await bot.send_photo(chat_id, thumb, caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
             asyncio.create_task(update_progress_message(chat_id, msg, time.time(), next_song["duration"], caption))
+
         except Exception as e:
             await bot.send_message(chat_id, f"⚠️ Could not auto-play next queued song:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
     else:
