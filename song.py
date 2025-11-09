@@ -7,7 +7,9 @@ import aiohttp
 from flask import Flask
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
-
+from pyrogram.enums import ParseMode
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
+import time
 from pyrogram import Client, filters, idle
 from pyrogram.types import Message
 from pytgcalls import PyTgCalls
@@ -70,6 +72,40 @@ def run_flask():
     port = int(os.getenv("PORT", 5000))
     # threaded True so it doesn't block main loop
     app.run(host="0.0.0.0", port=port, threaded=True)
+
+
+def format_time(seconds: float) -> str:
+    secs = int(seconds)
+    m, s = divmod(secs, 60)
+    h, m = divmod(m, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+def get_progress_bar(elapsed: float, total: float, bar_len: int = 14) -> str:
+    if total <= 0:
+        return "N/A"
+    frac = min(elapsed / total, 1)
+    idx = int(frac * bar_len)
+    left = "━" * idx
+    right = "─" * (bar_len - idx - 1)
+    return f"{format_time(elapsed)} {left}🦆{right} {format_time(total)}"
+
+async def update_progress_message(chat_id, msg, start_time, total_dur, caption):
+    while True:
+        elapsed = time.time() - start_time
+        if elapsed > total_dur:
+            break
+        bar = get_progress_bar(elapsed, total_dur)
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
+             InlineKeyboardButton("▶ Resume", callback_data="resume")],
+            [InlineKeyboardButton(bar, callback_data="progress")]
+        ])
+        try:
+            await msg.edit_caption(caption, reply_markup=kb, parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+        await asyncio.sleep(10)
+
 
 # -------------------------
 # YouTube / RapidAPI helpers
@@ -265,6 +301,13 @@ async def play_command(client: Client, message: Message):
     if not query:
         await message.reply_text("Please provide a song name after /play.")
         return
+    
+    # Send sticker when command starts
+    try:
+        await message.reply_sticker("CAACAgQAAxUAAWkKLkGIixUCa-zV6uEsHsYplBD-AALCGgACLVlRUIUYbMPxtAKWNgQ")
+    except Exception:
+        pass
+
 
     await message.reply_text(f"🔊 Searching '{query}' and preparing to play...")
 
@@ -283,10 +326,83 @@ async def play_command(client: Client, message: Message):
         # call_py.play expects (chat_id, MediaStream(...))
         log.info("Attempting to play in chat %s stream=%s", chat_id, mp3)
         await call_py.play(chat_id, MediaStream(mp3, video_flags=MediaStream.Flags.IGNORE))
-        await message.reply_text("✅ Playing in voice chat (attempted).")
+        caption = (
+            "<blockquote>"
+            "🎧 hulalala Streaming (Local Playback)\n\n"
+            f"❍ Title: {query}\n"
+            f"❍ Requested by: <a href='tg://user?id={message.from_user.id}'>{message.from_user.first_name}</a>"
+            "</blockquote>"
+        )
+        bar = get_progress_bar(0, 180)  # rough placeholder, 3 min default
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
+            InlineKeyboardButton("▶ Resume", callback_data="resume")],
+            [InlineKeyboardButton(bar, callback_data="progress")]
+        ])
+        # Build YouTube thumbnail from video id
+        thumb_url = f"https://img.youtube.com/vi/{vid}/hqdefault.jpg"
+
+        msg = await message.reply_photo(
+            photo=thumb_url,
+            caption=caption,
+            reply_markup=kb,
+            parse_mode=ParseMode.HTML
+        )
+
+
+        # kick off progress updater
+        asyncio.create_task(update_progress_message(message.chat.id, msg, time.time(), 180, caption))
+
     except Exception as e:
         log.exception("Failed to join voice chat / play: %s", e)
         await message.reply_text(f"❌ Voice playback error: {e}")
+
+@handler_client.on_message(filters.command("mpause"))
+async def mpause_command(client, message: Message):
+    user = await client.get_chat_member(message.chat.id, message.from_user.id)
+    if not (user.privileges or user.status in ("administrator", "creator")):
+        await message.reply_text("❌ You need to be an admin to use this command.")
+        return
+    try:
+        await call_py.pause(message.chat.id)
+        await message.reply_text("⏸ Paused the stream.")
+    except Exception as e:
+        await message.reply_text(f"❌ Failed to pause.\n{e}")
+
+@handler_client.on_message(filters.command("mresume"))
+async def mresume_command(client, message: Message):
+    user = await client.get_chat_member(message.chat.id, message.from_user.id)
+    if not (user.privileges or user.status in ("administrator", "creator")):
+        await message.reply_text("❌ You need to be an admin to use this command.")
+        return
+    try:
+        await call_py.resume(message.chat.id)
+        await message.reply_text("▶️ Resumed the stream.")
+    except Exception as e:
+        await message.reply_text(f"❌ Failed to resume.\n{e}")
+
+
+@handler_client.on_callback_query()
+async def callback_handler(client, cq: CallbackQuery):
+    chat_id = cq.message.chat.id
+    data = cq.data
+
+    if data == "pause":
+        try:
+            await call_py.pause(chat_id)
+            await cq.answer("⏸ Paused playback.")
+        except Exception as e:
+            await cq.answer(f"Error: {e}", show_alert=True)
+
+    elif data == "resume":
+        try:
+            await call_py.resume(chat_id)
+            await cq.answer("▶ Resumed playback.")
+        except Exception as e:
+            await cq.answer(f"Error: {e}", show_alert=True)
+
+    else:
+        await cq.answer()
 
 # -------------------------
 # Startup / shutdown helpers
@@ -397,4 +513,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
