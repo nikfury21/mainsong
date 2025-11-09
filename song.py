@@ -415,7 +415,17 @@ async def play_command(client: Client, message: Message):
     try:
         # call_py.play expects (chat_id, MediaStream(...))
         log.info("Attempting to play in chat %s stream=%s", chat_id, mp3)
-        await call_py.play(chat_id, MediaStream(mp3, video_flags=MediaStream.Flags.IGNORE))
+        try:
+            await call_py.play(chat_id, MediaStream(mp3, video_flags=MediaStream.Flags.IGNORE))
+        except Exception as e:
+            if "FLOOD_WAIT" in str(e):
+                await message.reply_text("🚫 Telegram asked to wait a bit before joining the voice chat. Try again in a minute.")
+            elif "INTERDC_X_CALL_RICH_ERROR" in str(e):
+                await message.reply_text("⚠️ Telegram servers are having trouble connecting the voice call. Please try again later.")
+            else:
+                await message.reply_text(f"❌ Voice playback error:\n<code>{e}</code>", parse_mode="html")
+            return
+
         caption = (
             "<blockquote>"
             "<b>🎧 <u>hulalala Streaming (Local Playback)</u></b>\n\n"
