@@ -14,14 +14,16 @@ from pyrogram import Client, filters, idle
 from pyrogram.types import Message
 from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream
-# --- Compatibility import for old/new PyTgCalls versions ---
+# --- Compatibility handling for PyTgCalls versions ---
 try:
     from pytgcalls import StreamType
     from pytgcalls.types import Update
-    HAS_ON_STREAM_END = True
 except ImportError:
-    HAS_ON_STREAM_END = False
+    StreamType = None
+    Update = None
 
+HAS_STREAM_END = hasattr(PyTgCalls, "on_stream_end")
+HAS_AUDIO_FINISHED = hasattr(PyTgCalls, "on_audio_finished")
 
 # -------------------------
 # Logging
@@ -387,8 +389,14 @@ async def play_command(client: Client, message: Message):
     chat_id = message.chat.id
 
     # --- Check if a song is already playing ---
-    active_calls_dict = await call_py.calls
-    active_chats = list(active_calls_dict.keys())
+    try:
+        active_calls_dict = call_py.calls
+        if asyncio.iscoroutine(active_calls_dict):
+            active_calls_dict = await active_calls_dict
+        active_chats = list(getattr(active_calls_dict, "keys", lambda: [])())
+    except Exception:
+        active_chats = []
+
 
     if chat_id in active_chats:
         song_data = {
@@ -462,108 +470,50 @@ async def play_command(client: Client, message: Message):
 
 
 
-if HAS_ON_STREAM_END:
-    @call_py.on_stream_end()
-    async def stream_end_handler(client, update):
-        chat_id = update.chat_id
-        if chat_id in music_queue and music_queue[chat_id]:
-            next_song = music_queue[chat_id].pop(0)
-            try:
-                await call_py.play(
-                    chat_id,
-                    MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE)
-                )
-                caption = (
-                    "<blockquote>"
-                    "<b>🎧 <u>hulalala Streaming (Local Playback)</u></b>\n\n"
-                    f"<b>❍ Title:</b> <i>{next_song['title']}</i>\n"
-                    f"<b>❍ Requested by:</b> "
-                    f"<a href='tg://user?id={next_song['user'].id}'>"
-                    f"<u>{next_song['user'].first_name}</u></a>"
-                    "</blockquote>"
-                )
-                bar = get_progress_bar(0, next_song["duration"])
-                kb = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
-                     InlineKeyboardButton("▶ Resume", callback_data="resume"),
-                     InlineKeyboardButton("⏭ Skip", callback_data="skip")],
-                    [InlineKeyboardButton(bar, callback_data="progress")]
-                ])
-                thumb_url = f"https://img.youtube.com/vi/{next_song['vid']}/hqdefault.jpg"
-                msg = await bot.send_photo(
-                    chat_id=chat_id,
-                    photo=thumb_url,
-                    caption=caption,
-                    reply_markup=kb,
-                    parse_mode=ParseMode.HTML
-                )
-                asyncio.create_task(
-                    update_progress_message(chat_id, msg, time.time(), next_song["duration"], caption)
-                )
-            except Exception as e:
-                await bot.send_message(
-                    chat_id,
-                    f"⚠️ Could not auto-play next queued song: <code>{e}</code>",
-                    parse_mode=ParseMode.HTML,
-                )
-        else:
-            await bot.send_message(
-                chat_id,
-                "✅ <b>Queue finished.</b> No more songs left.",
-                parse_mode=ParseMode.HTML,
+async def handle_next_in_queue(chat_id: int):
+    if chat_id in music_queue and music_queue[chat_id]:
+        next_song = music_queue[chat_id].pop(0)
+        try:
+            await call_py.play(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
+            caption = (
+                "<blockquote>"
+                "<b>🎧 <u>hulalala Streaming (Local Playback)</u></b>\n\n"
+                f"<b>❍ Title:</b> <i>{next_song['title']}</i>\n"
+                f"<b>❍ Requested by:</b> "
+                f"<a href='tg://user?id={next_song['user'].id}'>"
+                f"<u>{next_song['user'].first_name}</u></a>"
+                "</blockquote>"
             )
+            bar = get_progress_bar(0, next_song["duration"])
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
+                 InlineKeyboardButton("▶ Resume", callback_data="resume"),
+                 InlineKeyboardButton("⏭ Skip", callback_data="skip")],
+                [InlineKeyboardButton(bar, callback_data="progress")]
+            ])
+            thumb = f"https://img.youtube.com/vi/{next_song['vid']}/hqdefault.jpg"
+            msg = await bot.send_photo(chat_id, thumb, caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
+            asyncio.create_task(update_progress_message(chat_id, msg, time.time(), next_song["duration"], caption))
+        except Exception as e:
+            await bot.send_message(chat_id, f"⚠️ Could not auto-play next queued song:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
+    else:
+        await bot.send_message(chat_id, "✅ <b>Queue finished.</b>", parse_mode=ParseMode.HTML)
 
+
+# --- Event bindings (version-safe) ---
+if HAS_STREAM_END:
+    @call_py.on_stream_end()
+    async def stream_end(client, update):
+        await handle_next_in_queue(update.chat_id)
+elif HAS_AUDIO_FINISHED:
+    @call_py.on_audio_finished()
+    async def audio_finished(client, chat_id):
+        await handle_next_in_queue(chat_id)
 else:
     @call_py.on_update()
-    async def on_update_handler(client, update):
+    async def update_handler(client, update):
         if getattr(update, "update_type", None) == "stream_end":
-            chat_id = update.chat_id
-            if chat_id in music_queue and music_queue[chat_id]:
-                next_song = music_queue[chat_id].pop(0)
-                try:
-                    await call_py.play(
-                        chat_id,
-                        MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE)
-                    )
-                    caption = (
-                        "<blockquote>"
-                        "<b>🎧 <u>hulalala Streaming (Local Playback)</u></b>\n\n"
-                        f"<b>❍ Title:</b> <i>{next_song['title']}</i>\n"
-                        f"<b>❍ Requested by:</b> "
-                        f"<a href='tg://user?id={next_song['user'].id}'>"
-                        f"<u>{next_song['user'].first_name}</u></a>"
-                        "</blockquote>"
-                    )
-                    bar = get_progress_bar(0, next_song["duration"])
-                    kb = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
-                         InlineKeyboardButton("▶ Resume", callback_data="resume"),
-                         InlineKeyboardButton("⏭ Skip", callback_data="skip")],
-                        [InlineKeyboardButton(bar, callback_data="progress")]
-                    ])
-                    thumb_url = f"https://img.youtube.com/vi/{next_song['vid']}/hqdefault.jpg"
-                    msg = await bot.send_photo(
-                        chat_id=chat_id,
-                        photo=thumb_url,
-                        caption=caption,
-                        reply_markup=kb,
-                        parse_mode=ParseMode.HTML
-                    )
-                    asyncio.create_task(
-                        update_progress_message(chat_id, msg, time.time(), next_song["duration"], caption)
-                    )
-                except Exception as e:
-                    await bot.send_message(
-                        chat_id,
-                        f"⚠️ Could not auto-play next queued song: <code>{e}</code>",
-                        parse_mode=ParseMode.HTML,
-                    )
-            else:
-                await bot.send_message(
-                    chat_id,
-                    "✅ <b>Queue finished.</b> No more songs left.",
-                    parse_mode=ParseMode.HTML,
-                )
+            await handle_next_in_queue(update.chat_id)
 
 
 @handler_client.on_message(filters.command("mpause"))
@@ -594,13 +544,26 @@ async def mresume_command(client, message: Message):
 async def skip_command(client, message: Message):
     user = await client.get_chat_member(message.chat.id, message.from_user.id)
     if not (user.privileges or user.status in ("administrator", "creator")):
-        await message.reply_text("❌ <b>You need to be an admin to use this command.</b>", parse_mode=ParseMode.HTML)
+        await message.reply_text(
+            "❌ <b>You need to be an admin to use this command.</b>",
+            parse_mode=ParseMode.HTML,
+        )
         return
+
     try:
-        await call_py.leave_group_call(message.chat.id)
+        if hasattr(call_py, "stop_stream"):
+            await call_py.stop_stream(message.chat.id)
+        elif hasattr(call_py, "leave_call"):
+            await call_py.leave_call(message.chat.id)
+        else:
+            await call_py.stop(message.chat.id)
+
         await message.reply_text("⏭ <b>Skipped current song.</b>", parse_mode=ParseMode.HTML)
     except Exception as e:
-        await message.reply_text(f"❌ <b>Failed to skip:</b> <code>{e}</code>", parse_mode=ParseMode.HTML)
+        await message.reply_text(
+            f"❌ <b>Failed to skip:</b> <code>{e}</code>",
+            parse_mode=ParseMode.HTML,
+        )
 
 
 @handler_client.on_callback_query()
@@ -624,7 +587,13 @@ async def callback_handler(client, cq: CallbackQuery):
 
     elif data == "skip":
         try:
-            await call_py.leave_group_call(chat_id)
+            if hasattr(call_py, "stop_stream"):
+                await call_py.stop_stream(chat_id)
+            elif hasattr(call_py, "leave_call"):
+                await call_py.leave_call(chat_id)
+            else:
+                await call_py.stop(chat_id)
+
             await cq.answer("⏭ Skipping current song...")
         except Exception as e:
             await cq.answer(f"Error: {e}", show_alert=True)
