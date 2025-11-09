@@ -474,54 +474,76 @@ async def play_command(client: Client, message: Message):
 
 
 async def handle_next_in_queue(chat_id: int):
-    """Play the next song in the queue, ensuring userbot is in the call."""
+    """Play next song in queue safely (auto handles PyTgCalls 2.x / 3.x)."""
     if chat_id not in music_queue or not music_queue[chat_id]:
-        if chat_id in music_queue:
-            music_queue.pop(chat_id, None)
-        if bot:
-            await bot.send_message(chat_id, "✅ <b>Queue finished and cleared.</b>", parse_mode=ParseMode.HTML)
+        music_queue.pop(chat_id, None)
+        await bot.send_message(chat_id, "✅ <b>Queue finished and cleared.</b>", parse_mode=ParseMode.HTML)
         return
 
     next_song = music_queue[chat_id].pop(0)
 
     try:
-        # Make sure userbot is connected to voice chat before playing
+        # --- Detect PyTgCalls version & available methods ---
+        join_method = None
+        play_method = None
+
+        if hasattr(call_py, "join_group_call"):  # Old API
+            join_method = call_py.join_group_call
+            play_method = getattr(call_py, "play", None)
+        elif hasattr(call_py, "join_call"):  # New API
+            join_method = call_py.join_call
+            play_method = getattr(call_py, "stream_audio", None) or getattr(call_py, "stream", None)
+        else:
+            await bot.send_message(chat_id, "❌ PyTgCalls method mismatch — cannot find join function.", parse_mode=ParseMode.HTML)
+            return
+
+        # --- Check if userbot is already connected ---
         in_call = False
         try:
-            active_calls = call_py.calls
-            if asyncio.iscoroutine(active_calls):
-                active_calls = await active_calls
-            in_call = chat_id in getattr(active_calls, "keys", lambda: [])()
+            if hasattr(call_py, "active_calls"):
+                in_call = chat_id in getattr(call_py.active_calls, "keys", lambda: [])()
+            elif hasattr(call_py, "calls"):
+                active_calls = call_py.calls
+                if asyncio.iscoroutine(active_calls):
+                    active_calls = await active_calls
+                in_call = chat_id in getattr(active_calls, "keys", lambda: [])()
         except Exception:
             in_call = False
 
+        # --- Join or Play ---
         if not in_call:
-            try:
-                await call_py.join_group_call(
-                    chat_id,
-                    MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE)
-                )
-                log.info("✅ Userbot joined VC again for chat %s", chat_id)
-            except Exception as e:
-                await bot.send_message(chat_id, f"❌ Failed to join VC again:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
-                return
+            if "group" in join_method.__name__:
+                from pytgcalls.types import AudioPiped
+                await join_method(chat_id, AudioPiped(next_song["url"]))
+            else:
+                await join_method(chat_id)
+                if play_method:
+                    await play_method(chat_id, next_song["url"], repeat=False)
         else:
-            try:
-                await call_py.play(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
-            except Exception:
-                # fallback join if play() fails
-                await call_py.join_group_call(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
+            if play_method:
+                try:
+                    if "stream" in play_method.__name__:
+                        await play_method(chat_id, next_song["url"], repeat=False)
+                    else:
+                        from pytgcalls.types import AudioPiped
+                        await play_method(chat_id, AudioPiped(next_song["url"]))
+                except Exception:
+                    from pytgcalls.types import AudioPiped
+                    await join_method(chat_id, AudioPiped(next_song["url"]))
+            else:
+                from pytgcalls.types import AudioPiped
+                await join_method(chat_id, AudioPiped(next_song["url"]))
 
+        # --- Send UI Message ---
         caption = (
             "<blockquote>"
-            "<b>🎧 <u>hulalala Streaming (Auto Next)</u></b>\n\n"
+            "<b>🎧 <u>Now Streaming (Auto Next)</u></b>\n\n"
             f"<b>❍ Title:</b> <i>{next_song['title']}</i>\n"
             f"<b>❍ Requested by:</b> "
             f"<a href='tg://user?id={next_song['user'].id}'>"
             f"<u>{next_song['user'].first_name}</u></a>"
             "</blockquote>"
         )
-
         bar = get_progress_bar(0, next_song["duration"])
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
