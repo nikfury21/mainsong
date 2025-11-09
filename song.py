@@ -395,7 +395,7 @@ async def play_command(client: Client, message: Message):
 
 
 
-@call_py.on_stream_end()
+@call_py.on_event('stream_end')
 async def on_stream_end(_, update):
     chat_id = update.chat_id
     if chat_id in music_queue and music_queue[chat_id]:
