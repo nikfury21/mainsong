@@ -335,7 +335,7 @@ async def play_command(client: Client, message: Message):
     chat_id = message.chat.id
 
     # --- Check if a song is already playing ---
-    active_chats = list(call_py.calls.keys())
+    active_chats = list((await call_py.calls()).keys())
     if chat_id in active_chats:
         song_data = {
             "title": query,
@@ -354,6 +354,7 @@ async def play_command(client: Client, message: Message):
             parse_mode=ParseMode.HTML,
         )
         return
+
 
     try:
         # call_py.play expects (chat_id, MediaStream(...))
