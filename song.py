@@ -116,7 +116,7 @@ async def update_progress_message(chat_id, msg, start_time, total_dur, caption):
             await msg.edit_caption(caption, reply_markup=kb, parse_mode=ParseMode.HTML)
         except Exception:
             pass
-        await asyncio.sleep(10)
+        await asyncio.sleep(3)
 
 
 # -------------------------
