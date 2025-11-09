@@ -463,6 +463,9 @@ async def play_command(client: Client, message: Message):
 
         # kick off progress updater
         asyncio.create_task(update_progress_message(message.chat.id, msg, time.time(), duration_seconds or 180, caption))
+        # start fallback auto-next timer
+        asyncio.create_task(auto_next_timer(chat_id, duration_seconds or 180))
+
 
     except Exception as e:
         log.exception("Failed to join voice chat / play: %s", e)
@@ -505,7 +508,11 @@ async def handle_next_in_queue(chat_id: int):
             ])
             thumb = f"https://img.youtube.com/vi/{next_song['vid']}/hqdefault.jpg"
             msg = await bot.send_photo(chat_id, thumb, caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
+
             asyncio.create_task(update_progress_message(chat_id, msg, time.time(), next_song["duration"], caption))
+
+            # 🔥 Add this line — start auto-next timer
+            asyncio.create_task(auto_next_timer(chat_id, next_song["duration"] or 180))
 
         except Exception as e:
             await bot.send_message(chat_id, f"⚠️ Could not auto-play next queued song:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
@@ -516,21 +523,15 @@ async def handle_next_in_queue(chat_id: int):
         await bot.send_message(chat_id, "✅ <b>Queue finished and cleared.</b>", parse_mode=ParseMode.HTML)
 
 
+# --- Event bindings (timer-based fallback for PyTgCalls builds without stream_end) ---
+async def auto_next_timer(chat_id: int, duration: int):
+    """Fallback timer to trigger next song after duration."""
+    await asyncio.sleep(duration)
+    await handle_next_in_queue(chat_id)
 
-# --- Event bindings (version-safe) ---
-if HAS_STREAM_END:
-    @call_py.on_stream_end()
-    async def stream_end(client, update):
-        await handle_next_in_queue(update.chat_id)
-elif HAS_AUDIO_FINISHED:
-    @call_py.on_audio_finished()
-    async def audio_finished(client, chat_id):
-        await handle_next_in_queue(chat_id)
-else:
-    @call_py.on_update()
-    async def update_handler(client, update):
-        if getattr(update, "update_type", None) == "stream_end":
-            await handle_next_in_queue(update.chat_id)
+# When playing a song, we’ll start this timer
+# Modify handle_next_in_queue to start a timer too
+
 
 
 @handler_client.on_message(filters.command("mpause"))
