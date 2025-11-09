@@ -394,7 +394,6 @@ async def play_command(client: Client, message: Message):
         await message.reply_text(f"❌ Voice playback error: {e}")
 
 
-from pytgcalls.types.stream import StreamAudioEnded
 
 @call_py.on_stream_end()
 async def on_stream_end(_, update):
