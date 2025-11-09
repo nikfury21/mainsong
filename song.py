@@ -49,6 +49,7 @@ except Exception as e:
     log.warning("Spotify client init failed: %s", e)
     sp = None
 
+
 # -------------------------
 # Pyrogram and PyTgCalls clients
 # -------------------------
@@ -58,6 +59,17 @@ bot = Client("bot_account", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKE
 userbot = Client("userbot_account", session_string=USERBOT_SESSION, api_id=API_ID, api_hash=API_HASH)
 # PyTgCalls voice client attached to userbot
 call_py = PyTgCalls(userbot)
+
+
+
+music_queue = {}  # chat_id -> list of dicts for queued songs
+
+def add_to_queue(chat_id, song_data):
+    """Add song_data dict to queue for chat_id"""
+    if chat_id not in music_queue:
+        music_queue[chat_id] = []
+    music_queue[chat_id].append(song_data)
+    return len(music_queue[chat_id])
 
 # -------------------------
 # Flask app (keep alive for Render)
@@ -309,7 +321,6 @@ async def play_command(client: Client, message: Message):
         pass
 
 
-    await message.reply_text(f"🔊 Searching '{query}' and preparing to play...")
 
     async with aiohttp.ClientSession() as session:
         vid = await search_youtube_video_id(session, query)
@@ -322,23 +333,48 @@ async def play_command(client: Client, message: Message):
             return
 
     chat_id = message.chat.id
+
+    # --- Check if a song is already playing ---
+    active_chats = [x.chat_id for x in call_py.active_calls]
+    if chat_id in active_chats:
+        song_data = {
+            "title": query,
+            "url": mp3,
+            "vid": vid,
+            "user": message.from_user,
+            "duration": 180,  # Placeholder
+        }
+        position = add_to_queue(chat_id, song_data)
+
+        await message.reply_text(
+            f"<b>➜ Added to queue at</b> <u>#{position}</u>\n\n"
+            f"<b>‣ Title:</b> <i>{query}</i>\n"
+            f"<b>‣ Duration:</b> <u>4:29 minutes</u>\n"
+            f"<b>‣ Requested by:</b> <a href='tg://user?id={message.from_user.id}'>{message.from_user.first_name}</a>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
     try:
         # call_py.play expects (chat_id, MediaStream(...))
         log.info("Attempting to play in chat %s stream=%s", chat_id, mp3)
         await call_py.play(chat_id, MediaStream(mp3, video_flags=MediaStream.Flags.IGNORE))
         caption = (
             "<blockquote>"
-            "🎧 hulalala Streaming (Local Playback)\n\n"
-            f"❍ Title: {query}\n"
-            f"❍ Requested by: <a href='tg://user?id={message.from_user.id}'>{message.from_user.first_name}</a>"
+            "<b>🎧 <u>hulalala Streaming (Local Playback)</u></b>\n\n"
+            f"<b>❍ Title:</b> <i>{query}</i>\n"
+            f"<b>❍ Requested by:</b> <a href='tg://user?id={message.from_user.id}'><u>{message.from_user.first_name}</u></a>"
             "</blockquote>"
         )
+
         bar = get_progress_bar(0, 180)  # rough placeholder, 3 min default
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
-            InlineKeyboardButton("▶ Resume", callback_data="resume")],
+            InlineKeyboardButton("▶ Resume", callback_data="resume"),
+            InlineKeyboardButton("⏭ Skip", callback_data="skip")],
             [InlineKeyboardButton(bar, callback_data="progress")]
         ])
+
         # Build YouTube thumbnail from video id
         thumb_url = f"https://img.youtube.com/vi/{vid}/hqdefault.jpg"
 
@@ -356,6 +392,46 @@ async def play_command(client: Client, message: Message):
     except Exception as e:
         log.exception("Failed to join voice chat / play: %s", e)
         await message.reply_text(f"❌ Voice playback error: {e}")
+
+
+from pytgcalls.types.stream import StreamAudioEnded
+
+@call_py.on_stream_end()
+async def on_stream_end(_, update):
+    chat_id = update.chat_id
+    if chat_id in music_queue and music_queue[chat_id]:
+        next_song = music_queue[chat_id].pop(0)
+        try:
+            await call_py.play(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
+            caption = (
+                "<blockquote>"
+                "<b>🎧 <u>hulalala Streaming (Local Playback)</u></b>\n\n"
+                f"<b>❍ Title:</b> <i>{next_song['title']}</i>\n"
+                f"<b>❍ Requested by:</b> <a href='tg://user?id={next_song['user'].id}'><u>{next_song['user'].first_name}</u></a>"
+                "</blockquote>"
+            )
+            bar = get_progress_bar(0, next_song["duration"])
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
+                 InlineKeyboardButton("▶ Resume", callback_data="resume"),
+                 InlineKeyboardButton("⏭ Skip", callback_data="skip")],
+                [InlineKeyboardButton(bar, callback_data="progress")]
+            ])
+            thumb_url = f"https://img.youtube.com/vi/{next_song['vid']}/hqdefault.jpg"
+            msg = await bot.send_photo(
+                chat_id=chat_id,
+                photo=thumb_url,
+                caption=caption,
+                reply_markup=kb,
+                parse_mode=ParseMode.HTML
+            )
+            asyncio.create_task(update_progress_message(chat_id, msg, time.time(), next_song["duration"], caption))
+        except Exception as e:
+            await bot.send_message(chat_id, f"⚠️ Could not auto-play next queued song: <code>{e}</code>", parse_mode=ParseMode.HTML)
+    else:
+        await bot.send_message(chat_id, "✅ <b>Queue finished.</b> No more songs left.", parse_mode=ParseMode.HTML)
+
+
 
 @handler_client.on_message(filters.command("mpause"))
 async def mpause_command(client, message: Message):
@@ -381,6 +457,18 @@ async def mresume_command(client, message: Message):
     except Exception as e:
         await message.reply_text(f"❌ Failed to resume.\n{e}")
 
+@handler_client.on_message(filters.command("skip"))
+async def skip_command(client, message: Message):
+    user = await client.get_chat_member(message.chat.id, message.from_user.id)
+    if not (user.privileges or user.status in ("administrator", "creator")):
+        await message.reply_text("❌ <b>You need to be an admin to use this command.</b>", parse_mode=ParseMode.HTML)
+        return
+    try:
+        await call_py.leave_group_call(message.chat.id)
+        await message.reply_text("⏭ <b>Skipped current song.</b>", parse_mode=ParseMode.HTML)
+    except Exception as e:
+        await message.reply_text(f"❌ <b>Failed to skip:</b> <code>{e}</code>", parse_mode=ParseMode.HTML)
+
 
 @handler_client.on_callback_query()
 async def callback_handler(client, cq: CallbackQuery):
@@ -400,6 +488,14 @@ async def callback_handler(client, cq: CallbackQuery):
             await cq.answer("▶ Resumed playback.")
         except Exception as e:
             await cq.answer(f"Error: {e}", show_alert=True)
+
+    elif data == "skip":
+        try:
+            await call_py.leave_group_call(chat_id)
+            await cq.answer("⏭ Skipping current song...")
+        except Exception as e:
+            await cq.answer(f"Error: {e}", show_alert=True)
+
 
     else:
         await cq.answer()
