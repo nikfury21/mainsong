@@ -474,77 +474,61 @@ async def play_command(client: Client, message: Message):
 
 
 async def handle_next_in_queue(chat_id: int):
-    """Continue playing from queue for PyTgCalls v2.x (join_group_call + MediaStream)."""
-    if chat_id not in music_queue or not music_queue[chat_id]:
-        music_queue.pop(chat_id, None)
-        await bot.send_message(chat_id, "✅ <b>Queue finished and cleared.</b>", parse_mode=ParseMode.HTML)
-        return
-
-    next_song = music_queue[chat_id].pop(0)
-
-    try:
-        # ✅ Ensure userbot is connected before trying to play
-        in_call = False
+    if chat_id in music_queue and music_queue[chat_id]:
+        next_song = music_queue[chat_id].pop(0)
         try:
-            active_calls = call_py.calls
-            if asyncio.iscoroutine(active_calls):
-                active_calls = await active_calls
-            in_call = chat_id in getattr(active_calls, "keys", lambda: [])()
-        except Exception:
-            in_call = False
+            # Leave and rejoin the VC before playing next song
+            if hasattr(call_py, "stop_stream"):
+                await call_py.stop_stream(chat_id)
+            elif hasattr(call_py, "leave_call"):
+                await call_py.leave_call(chat_id)
+            else:
+                await call_py.stop(chat_id)
 
-        # ✅ If not in VC, rejoin and start playing
-        if not in_call:
-            await call_py.join_group_call(
-                chat_id,
-                MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE)
-            )
-            log.info("✅ Userbot rejoined VC for chat %s", chat_id)
-        else:
+            # small delay to let Telegram clean old session
+            await asyncio.sleep(2.5)
+
+            # ensure userbot re-joins the VC before playing
             try:
-                await call_py.play(
-                    chat_id,
-                    MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE)
-                )
+                await call_py.join_group_call(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
             except Exception:
-                # fallback join if play() fails
-                await call_py.join_group_call(
-                    chat_id,
-                    MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE)
-                )
+                # if join_group_call doesn’t exist in this version, fallback to play()
+                await call_py.play(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
 
-        # ✅ UI & Progress Bar
-        caption = (
-            "<blockquote>"
-            "<b>🎧 <u>Now Streaming (Auto Next)</u></b>\n\n"
-            f"<b>❍ Title:</b> <i>{next_song['title']}</i>\n"
-            f"<b>❍ Requested by:</b> "
-            f"<a href='tg://user?id={next_song['user'].id}'>"
-            f"<u>{next_song['user'].first_name}</u></a>"
-            "</blockquote>"
-        )
 
-        bar = get_progress_bar(0, next_song["duration"])
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
-             InlineKeyboardButton("▶ Resume", callback_data="resume"),
-             InlineKeyboardButton("⏭ Skip", callback_data="skip")],
-            [InlineKeyboardButton(bar, callback_data="progress")]
-        ])
-        thumb = f"https://img.youtube.com/vi/{next_song['vid']}/hqdefault.jpg"
-        msg = await bot.send_photo(
-            chat_id,
-            thumb,
-            caption=caption,
-            reply_markup=kb,
-            parse_mode=ParseMode.HTML
-        )
+            caption = (
+                "<blockquote>"
+                "<b>🎧 <u>hulalala Streaming (Auto Next)</u></b>\n\n"
+                f"<b>❍ Title:</b> <i>{next_song['title']}</i>\n"
+                f"<b>❍ Requested by:</b> "
+                f"<a href='tg://user?id={next_song['user'].id}'>"
+                f"<u>{next_song['user'].first_name}</u></a>"
+                "</blockquote>"
+            )
 
-        asyncio.create_task(update_progress_message(chat_id, msg, time.time(), next_song["duration"], caption))
-        asyncio.create_task(auto_next_timer(chat_id, next_song["duration"] or 180))
+            bar = get_progress_bar(0, next_song["duration"])
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
+                 InlineKeyboardButton("▶ Resume", callback_data="resume"),
+                 InlineKeyboardButton("⏭ Skip", callback_data="skip")],
+                [InlineKeyboardButton(bar, callback_data="progress")]
+            ])
+            thumb = f"https://img.youtube.com/vi/{next_song['vid']}/hqdefault.jpg"
+            msg = await bot.send_photo(chat_id, thumb, caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
 
-    except Exception as e:
-        await bot.send_message(chat_id, f"⚠️ Could not auto-play next queued song:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
+            asyncio.create_task(update_progress_message(chat_id, msg, time.time(), next_song["duration"], caption))
+
+            # 🔥 Add this line — start auto-next timer
+            asyncio.create_task(auto_next_timer(chat_id, next_song["duration"] or 180))
+
+        except Exception as e:
+            await bot.send_message(chat_id, f"⚠️ Could not auto-play next queued song:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
+    else:
+        # No more songs in queue — clear it and notify
+        if chat_id in music_queue:
+            music_queue.pop(chat_id, None)
+        await bot.send_message(chat_id, "✅ <b>Queue finished and cleared.</b>", parse_mode=ParseMode.HTML)
+
 
 
 # --- Event bindings (timer-based fallback for PyTgCalls builds without stream_end) ---
@@ -555,7 +539,6 @@ async def auto_next_timer(chat_id: int, duration: int):
 
 # When playing a song, we’ll start this timer
 # Modify handle_next_in_queue to start a timer too
-
 
 
 @handler_client.on_message(filters.command("mpause"))
@@ -778,3 +761,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
