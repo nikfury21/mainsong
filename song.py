@@ -485,9 +485,16 @@ async def handle_next_in_queue(chat_id: int):
             else:
                 await call_py.stop(chat_id)
 
-            await asyncio.sleep(1.5)  # small delay for clean reconnect
+            # small delay to let Telegram clean old session
+            await asyncio.sleep(2.5)
 
-            await call_py.play(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
+            # ensure userbot re-joins the VC before playing
+            try:
+                await call_py.join_group_call(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
+            except Exception:
+                # if join_group_call doesn’t exist in this version, fallback to play()
+                await call_py.play(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
+
 
             caption = (
                 "<blockquote>"
