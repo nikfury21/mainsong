@@ -324,6 +324,19 @@ async def play_command(client: Client, message: Message):
 
     async with aiohttp.ClientSession() as session:
         vid = await search_youtube_video_id(session, query)
+        # Get actual video title from YouTube
+        video_title = query  # fallback
+        if vid:
+            try:
+                yt_api_url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet&id={vid}&key={YOUTUBE_API_KEY}"
+                async with session.get(yt_api_url) as resp:
+                    data = await resp.json()
+                    items = data.get("items")
+                    if items:
+                        video_title = items[0]["snippet"]["title"]
+            except Exception:
+                pass
+
         if not vid:
             await message.reply_text("❌ Could not find on YouTube.")
             return
@@ -340,7 +353,7 @@ async def play_command(client: Client, message: Message):
 
     if chat_id in active_chats:
         song_data = {
-            "title": query,
+            "title": video_title,
             "url": mp3,
             "vid": vid,
             "user": message.from_user,
@@ -365,7 +378,7 @@ async def play_command(client: Client, message: Message):
         caption = (
             "<blockquote>"
             "<b>🎧 <u>hulalala Streaming (Local Playback)</u></b>\n\n"
-            f"<b>❍ Title:</b> <i>{query}</i>\n"
+            f"<b>❍ Title:</b> <i>{video_title}</i>\n"
             f"<b>❍ Requested by:</b> <a href='tg://user?id={message.from_user.id}'><u>{message.from_user.first_name}</u></a>"
             "</blockquote>"
         )
