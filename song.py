@@ -477,24 +477,14 @@ async def handle_next_in_queue(chat_id: int):
     if chat_id in music_queue and music_queue[chat_id]:
         next_song = music_queue[chat_id].pop(0)
         try:
-            # Leave and rejoin the VC before playing next song
-            if hasattr(call_py, "stop_stream"):
-                await call_py.stop_stream(chat_id)
-            elif hasattr(call_py, "leave_call"):
-                await call_py.leave_call(chat_id)
-            else:
-                await call_py.stop(chat_id)
-
-            # small delay to let Telegram clean old session
-            await asyncio.sleep(2.5)
-
-            # ensure userbot re-joins the VC before playing
-            try:
-                await call_py.join_group_call(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
-            except Exception:
-                # if join_group_call doesn’t exist in this version, fallback to play()
+            # ✅ Instead of leaving VC, just change the stream
+            if hasattr(call_py, "change_stream"):
+                await call_py.change_stream(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
+            elif hasattr(call_py, "play"):
+                # fallback for older PyTgCalls builds
                 await call_py.play(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
-
+            else:
+                raise Exception("No compatible stream change method found.")
 
             caption = (
                 "<blockquote>"
@@ -516,17 +506,23 @@ async def handle_next_in_queue(chat_id: int):
             thumb = f"https://img.youtube.com/vi/{next_song['vid']}/hqdefault.jpg"
             msg = await bot.send_photo(chat_id, thumb, caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
 
+            # Start progress updater + auto next
             asyncio.create_task(update_progress_message(chat_id, msg, time.time(), next_song["duration"], caption))
-
-            # 🔥 Add this line — start auto-next timer
             asyncio.create_task(auto_next_timer(chat_id, next_song["duration"] or 180))
 
         except Exception as e:
             await bot.send_message(chat_id, f"⚠️ Could not auto-play next queued song:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
     else:
-        # No more songs in queue — clear it and notify
+        # 🧹 Leave VC only when queue is empty
         if chat_id in music_queue:
             music_queue.pop(chat_id, None)
+        try:
+            if hasattr(call_py, "leave_call"):
+                await call_py.leave_call(chat_id)
+            elif hasattr(call_py, "stop"):
+                await call_py.stop(chat_id)
+        except Exception:
+            pass
         await bot.send_message(chat_id, "✅ <b>Queue finished and cleared.</b>", parse_mode=ParseMode.HTML)
 
 
