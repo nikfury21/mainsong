@@ -497,7 +497,11 @@ async def handle_next_in_queue(chat_id: int):
         except Exception as e:
             await bot.send_message(chat_id, f"⚠️ Could not auto-play next queued song:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
     else:
-        await bot.send_message(chat_id, "✅ <b>Queue finished.</b>", parse_mode=ParseMode.HTML)
+        # No more songs in queue — clear it and notify
+        if chat_id in music_queue:
+            music_queue.pop(chat_id, None)
+        await bot.send_message(chat_id, "✅ <b>Queue finished and cleared.</b>", parse_mode=ParseMode.HTML)
+
 
 
 # --- Event bindings (version-safe) ---
@@ -550,20 +554,45 @@ async def skip_command(client, message: Message):
         )
         return
 
+    chat_id = message.chat.id
     try:
+        # Stop current stream safely
         if hasattr(call_py, "stop_stream"):
-            await call_py.stop_stream(message.chat.id)
+            await call_py.stop_stream(chat_id)
         elif hasattr(call_py, "leave_call"):
-            await call_py.leave_call(message.chat.id)
+            await call_py.leave_call(chat_id)
         else:
-            await call_py.stop(message.chat.id)
+            await call_py.stop(chat_id)
 
         await message.reply_text("⏭ <b>Skipped current song.</b>", parse_mode=ParseMode.HTML)
+
+        # ✅ Immediately play the next song in queue
+        await handle_next_in_queue(chat_id)
+
     except Exception as e:
         await message.reply_text(
             f"❌ <b>Failed to skip:</b> <code>{e}</code>",
             parse_mode=ParseMode.HTML,
         )
+
+
+@handler_client.on_message(filters.command("clear"))
+async def clear_queue(client, message: Message):
+    chat_id = message.chat.id
+    user = await client.get_chat_member(chat_id, message.from_user.id)
+    if not (user.privileges or user.status in ("administrator", "creator")):
+        await message.reply_text(
+            "❌ <b>You need to be an admin to use this command.</b>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if chat_id in music_queue:
+        count = len(music_queue[chat_id])
+        music_queue.pop(chat_id, None)
+        await message.reply_text(f"🧹 <b>Cleared {count} song(s) from the queue.</b>", parse_mode=ParseMode.HTML)
+    else:
+        await message.reply_text("⚠️ <b>No queued songs to clear.</b>", parse_mode=ParseMode.HTML)
 
 
 @handler_client.on_callback_query()
