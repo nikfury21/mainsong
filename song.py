@@ -474,7 +474,7 @@ async def play_command(client: Client, message: Message):
 
 
 async def handle_next_in_queue(chat_id: int):
-    """Play next song in queue safely (auto handles PyTgCalls 2.x / 3.x)."""
+    """Continue playing from queue for PyTgCalls v2.x (join_group_call + MediaStream)."""
     if chat_id not in music_queue or not music_queue[chat_id]:
         music_queue.pop(chat_id, None)
         await bot.send_message(chat_id, "✅ <b>Queue finished and cleared.</b>", parse_mode=ParseMode.HTML)
@@ -483,58 +483,37 @@ async def handle_next_in_queue(chat_id: int):
     next_song = music_queue[chat_id].pop(0)
 
     try:
-        # --- Detect PyTgCalls version & available methods ---
-        join_method = None
-        play_method = None
-
-        if hasattr(call_py, "join_group_call"):  # Old API
-            join_method = call_py.join_group_call
-            play_method = getattr(call_py, "play", None)
-        elif hasattr(call_py, "join_call"):  # New API
-            join_method = call_py.join_call
-            play_method = getattr(call_py, "stream_audio", None) or getattr(call_py, "stream", None)
-        else:
-            await bot.send_message(chat_id, "❌ PyTgCalls method mismatch — cannot find join function.", parse_mode=ParseMode.HTML)
-            return
-
-        # --- Check if userbot is already connected ---
+        # ✅ Ensure userbot is connected before trying to play
         in_call = False
         try:
-            if hasattr(call_py, "active_calls"):
-                in_call = chat_id in getattr(call_py.active_calls, "keys", lambda: [])()
-            elif hasattr(call_py, "calls"):
-                active_calls = call_py.calls
-                if asyncio.iscoroutine(active_calls):
-                    active_calls = await active_calls
-                in_call = chat_id in getattr(active_calls, "keys", lambda: [])()
+            active_calls = call_py.calls
+            if asyncio.iscoroutine(active_calls):
+                active_calls = await active_calls
+            in_call = chat_id in getattr(active_calls, "keys", lambda: [])()
         except Exception:
             in_call = False
 
-        # --- Join or Play ---
+        # ✅ If not in VC, rejoin and start playing
         if not in_call:
-            if "group" in join_method.__name__:
-                from pytgcalls.types import AudioPiped
-                await join_method(chat_id, AudioPiped(next_song["url"]))
-            else:
-                await join_method(chat_id)
-                if play_method:
-                    await play_method(chat_id, next_song["url"], repeat=False)
+            await call_py.join_group_call(
+                chat_id,
+                MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE)
+            )
+            log.info("✅ Userbot rejoined VC for chat %s", chat_id)
         else:
-            if play_method:
-                try:
-                    if "stream" in play_method.__name__:
-                        await play_method(chat_id, next_song["url"], repeat=False)
-                    else:
-                        from pytgcalls.types import AudioPiped
-                        await play_method(chat_id, AudioPiped(next_song["url"]))
-                except Exception:
-                    from pytgcalls.types import AudioPiped
-                    await join_method(chat_id, AudioPiped(next_song["url"]))
-            else:
-                from pytgcalls.types import AudioPiped
-                await join_method(chat_id, AudioPiped(next_song["url"]))
+            try:
+                await call_py.play(
+                    chat_id,
+                    MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE)
+                )
+            except Exception:
+                # fallback join if play() fails
+                await call_py.join_group_call(
+                    chat_id,
+                    MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE)
+                )
 
-        # --- Send UI Message ---
+        # ✅ UI & Progress Bar
         caption = (
             "<blockquote>"
             "<b>🎧 <u>Now Streaming (Auto Next)</u></b>\n\n"
@@ -544,6 +523,7 @@ async def handle_next_in_queue(chat_id: int):
             f"<u>{next_song['user'].first_name}</u></a>"
             "</blockquote>"
         )
+
         bar = get_progress_bar(0, next_song["duration"])
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
@@ -552,7 +532,13 @@ async def handle_next_in_queue(chat_id: int):
             [InlineKeyboardButton(bar, callback_data="progress")]
         ])
         thumb = f"https://img.youtube.com/vi/{next_song['vid']}/hqdefault.jpg"
-        msg = await bot.send_photo(chat_id, thumb, caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
+        msg = await bot.send_photo(
+            chat_id,
+            thumb,
+            caption=caption,
+            reply_markup=kb,
+            parse_mode=ParseMode.HTML
+        )
 
         asyncio.create_task(update_progress_message(chat_id, msg, time.time(), next_song["duration"], caption))
         asyncio.create_task(auto_next_timer(chat_id, next_song["duration"] or 180))
