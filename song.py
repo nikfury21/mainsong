@@ -14,6 +14,14 @@ from pyrogram import Client, filters, idle
 from pyrogram.types import Message
 from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream
+# --- Compatibility import for old/new PyTgCalls versions ---
+try:
+    from pytgcalls import StreamType
+    from pytgcalls.types import Update
+    HAS_ON_STREAM_END = True
+except ImportError:
+    HAS_ON_STREAM_END = False
+
 
 # -------------------------
 # Logging
@@ -92,6 +100,24 @@ def format_time(seconds: float) -> str:
     h, m = divmod(m, 60)
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
+import re
+
+def iso8601_to_seconds(iso: str) -> int:
+    """Convert ISO-8601 duration (PT#H#M#S) → seconds."""
+    if not iso:
+        return 0
+    try:
+        m = re.match(r'^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$', iso)
+        if not m:
+            return 0
+        h = int(m.group(1) or 0)
+        m_ = int(m.group(2) or 0)
+        s = int(m.group(3) or 0)
+        return h * 3600 + m_ * 60 + s
+    except Exception:
+        return 0
+
+
 def get_progress_bar(elapsed: float, total: float, bar_len: int = 14) -> str:
     if total <= 0:
         return "N/A"
@@ -116,7 +142,7 @@ async def update_progress_message(chat_id, msg, start_time, total_dur, caption):
             await msg.edit_caption(caption, reply_markup=kb, parse_mode=ParseMode.HTML)
         except Exception:
             pass
-        await asyncio.sleep(3)
+        await asyncio.sleep(6)
 
 
 # -------------------------
@@ -324,18 +350,31 @@ async def play_command(client: Client, message: Message):
 
     async with aiohttp.ClientSession() as session:
         vid = await search_youtube_video_id(session, query)
-        # Get actual video title from YouTube
-        video_title = query  # fallback
+
+        video_title = query      # fallback title
+        duration_seconds = 0     # fallback duration
+
         if vid:
             try:
-                yt_api_url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet&id={vid}&key={YOUTUBE_API_KEY}"
+                yt_api_url = (
+                    f"https://www.googleapis.com/youtube/v3/videos"
+                    f"?part=snippet,contentDetails&id={vid}&key={YOUTUBE_API_KEY}"
+                )
                 async with session.get(yt_api_url) as resp:
-                    data = await resp.json()
-                    items = data.get("items")
-                    if items:
-                        video_title = items[0]["snippet"]["title"]
+                    if resp.status == 200:
+                        data = await resp.json()
+                        items = data.get("items")
+                        if items:
+                            snippet = items[0].get("snippet", {})
+                            content = items[0].get("contentDetails", {})
+                            video_title = snippet.get("title", query)
+                            iso_dur = content.get("duration")
+                            duration_seconds = iso8601_to_seconds(iso_dur)
             except Exception:
                 pass
+
+        readable_duration = format_time(duration_seconds or 0)
+
 
         if not vid:
             await message.reply_text("❌ Could not find on YouTube.")
@@ -357,14 +396,16 @@ async def play_command(client: Client, message: Message):
             "url": mp3,
             "vid": vid,
             "user": message.from_user,
-            "duration": 180,  # Placeholder
+            "duration": duration_seconds or 180,
+
         }
         position = add_to_queue(chat_id, song_data)
 
         await message.reply_text(
             f"<b>➜ Added to queue at</b> <u>#{position}</u>\n\n"
-            f"<b>‣ Title:</b> <i>{query}</i>\n"
-            f"<b>‣ Duration:</b> <u>4:29 minutes</u>\n"
+            f"<b>‣ Title:</b> <i>{video_title}</i>\n"
+            f"<b>‣ Duration:</b> <u>{readable_duration}</u>\n"
+
             f"<b>‣ Requested by:</b> <a href='tg://user?id={message.from_user.id}'>{message.from_user.first_name}</a>",
             parse_mode=ParseMode.HTML,
         )
@@ -383,7 +424,7 @@ async def play_command(client: Client, message: Message):
             "</blockquote>"
         )
 
-        bar = get_progress_bar(0, 180)  # rough placeholder, 3 min default
+        bar = get_progress_bar(0, duration_seconds or 180)  # rough placeholder, 3 min default
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
             InlineKeyboardButton("▶ Resume", callback_data="resume"),
@@ -403,7 +444,7 @@ async def play_command(client: Client, message: Message):
 
 
         # kick off progress updater
-        asyncio.create_task(update_progress_message(message.chat.id, msg, time.time(), 180, caption))
+        asyncio.create_task(update_progress_message(message.chat.id, msg, time.time(), duration_seconds or 180, caption))
 
     except Exception as e:
         log.exception("Failed to join voice chat / play: %s", e)
@@ -411,19 +452,24 @@ async def play_command(client: Client, message: Message):
 
 
 
-@call_py.on_update()
-async def on_update_handler(client, update):
-    if getattr(update, "update_type", None) == "stream_end":
+if HAS_ON_STREAM_END:
+    @call_py.on_stream_end()
+    async def stream_end_handler(client, update):
         chat_id = update.chat_id
         if chat_id in music_queue and music_queue[chat_id]:
             next_song = music_queue[chat_id].pop(0)
             try:
-                await call_py.play(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
+                await call_py.play(
+                    chat_id,
+                    MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE)
+                )
                 caption = (
                     "<blockquote>"
                     "<b>🎧 <u>hulalala Streaming (Local Playback)</u></b>\n\n"
                     f"<b>❍ Title:</b> <i>{next_song['title']}</i>\n"
-                    f"<b>❍ Requested by:</b> <a href='tg://user?id={next_song['user'].id}'><u>{next_song['user'].first_name}</u></a>"
+                    f"<b>❍ Requested by:</b> "
+                    f"<a href='tg://user?id={next_song['user'].id}'>"
+                    f"<u>{next_song['user'].first_name}</u></a>"
                     "</blockquote>"
                 )
                 bar = get_progress_bar(0, next_song["duration"])
@@ -441,12 +487,73 @@ async def on_update_handler(client, update):
                     reply_markup=kb,
                     parse_mode=ParseMode.HTML
                 )
-                asyncio.create_task(update_progress_message(chat_id, msg, time.time(), next_song["duration"], caption))
+                asyncio.create_task(
+                    update_progress_message(chat_id, msg, time.time(), next_song["duration"], caption)
+                )
             except Exception as e:
-                await bot.send_message(chat_id, f"⚠️ Could not auto-play next queued song: <code>{e}</code>", parse_mode=ParseMode.HTML)
+                await bot.send_message(
+                    chat_id,
+                    f"⚠️ Could not auto-play next queued song: <code>{e}</code>",
+                    parse_mode=ParseMode.HTML,
+                )
         else:
-            await bot.send_message(chat_id, "✅ <b>Queue finished.</b> No more songs left.", parse_mode=ParseMode.HTML)
+            await bot.send_message(
+                chat_id,
+                "✅ <b>Queue finished.</b> No more songs left.",
+                parse_mode=ParseMode.HTML,
+            )
 
+else:
+    @call_py.on_update()
+    async def on_update_handler(client, update):
+        if getattr(update, "update_type", None) == "stream_end":
+            chat_id = update.chat_id
+            if chat_id in music_queue and music_queue[chat_id]:
+                next_song = music_queue[chat_id].pop(0)
+                try:
+                    await call_py.play(
+                        chat_id,
+                        MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE)
+                    )
+                    caption = (
+                        "<blockquote>"
+                        "<b>🎧 <u>hulalala Streaming (Local Playback)</u></b>\n\n"
+                        f"<b>❍ Title:</b> <i>{next_song['title']}</i>\n"
+                        f"<b>❍ Requested by:</b> "
+                        f"<a href='tg://user?id={next_song['user'].id}'>"
+                        f"<u>{next_song['user'].first_name}</u></a>"
+                        "</blockquote>"
+                    )
+                    bar = get_progress_bar(0, next_song["duration"])
+                    kb = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
+                         InlineKeyboardButton("▶ Resume", callback_data="resume"),
+                         InlineKeyboardButton("⏭ Skip", callback_data="skip")],
+                        [InlineKeyboardButton(bar, callback_data="progress")]
+                    ])
+                    thumb_url = f"https://img.youtube.com/vi/{next_song['vid']}/hqdefault.jpg"
+                    msg = await bot.send_photo(
+                        chat_id=chat_id,
+                        photo=thumb_url,
+                        caption=caption,
+                        reply_markup=kb,
+                        parse_mode=ParseMode.HTML
+                    )
+                    asyncio.create_task(
+                        update_progress_message(chat_id, msg, time.time(), next_song["duration"], caption)
+                    )
+                except Exception as e:
+                    await bot.send_message(
+                        chat_id,
+                        f"⚠️ Could not auto-play next queued song: <code>{e}</code>",
+                        parse_mode=ParseMode.HTML,
+                    )
+            else:
+                await bot.send_message(
+                    chat_id,
+                    "✅ <b>Queue finished.</b> No more songs left.",
+                    parse_mode=ParseMode.HTML,
+                )
 
 
 @handler_client.on_message(filters.command("mpause"))
