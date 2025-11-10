@@ -611,6 +611,148 @@ async def clear_queue(client, message: Message):
     else:
         await message.reply_text("⚠️ <b>No queued songs to clear.</b>", parse_mode=ParseMode.HTML)
 
+# ==============================
+# Extra: Seek, Seekback, and Ping
+# ==============================
+import subprocess
+from datetime import datetime
+
+MODS = [8353079084]  # add your Telegram user ID(s) here
+BOT_START_TIME = time.time()
+
+def parse_duration_str(duration_str):
+    """Convert duration like '3:25' or '00:03:25' into seconds."""
+    parts = duration_str.split(':')
+    parts = [int(p) for p in parts]
+    if len(parts) == 3:
+        h, m, s = parts
+        return h * 3600 + m * 60 + s
+    elif len(parts) == 2:
+        m, s = parts
+        return m * 60 + s
+    elif len(parts) == 1:
+        return parts[0]
+    return 0
+
+
+async def restart_with_seek(chat_id: int, seek_pos: int, message: Message):
+    if chat_id not in music_queue or not music_queue[chat_id]:
+        await message.reply("❌ Nothing is playing.")
+        return
+
+    current_song = music_queue[chat_id][0]
+    try:
+        await call_py.leave_call(chat_id)
+
+        media_path = current_song["url"]
+        trimmed_path = f"seeked_{chat_id}.mp3"
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-ss", str(seek_pos),
+            "-i", media_path,
+            "-acodec", "copy",
+            trimmed_path
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        await proc.communicate()
+
+        await call_py.play(chat_id, MediaStream(trimmed_path, video_flags=MediaStream.Flags.IGNORE))
+        current_song["start_time"] = time.time() - seek_pos
+
+        await message.reply(f"⏩ Seeked to {format_time(seek_pos)} in **{current_song['title']}**")
+
+    except Exception as e:
+        await message.reply(f"❌ Failed to seek.\nError: {str(e)}")
+
+
+@handler_client.on_message(filters.group & filters.command("seek"))
+async def seek_handler(client, message: Message):
+    args = message.text.split()
+    if len(args) < 2 or not args[1].isdigit():
+        await message.reply("❌ Usage: /seek <seconds>")
+        return
+
+    chat_id = message.chat.id
+    if chat_id not in music_queue or not music_queue[chat_id]:
+        await message.reply("❌ Nothing is playing.")
+        return
+
+    seconds = int(args[1])
+    song = music_queue[chat_id][0]
+    elapsed = int(time.time() - song.get("start_time", time.time()))
+    seek_pos = elapsed + seconds
+
+    duration = int(song.get("duration", 0))
+    if seek_pos >= duration:
+        seek_pos = duration
+    await restart_with_seek(chat_id, seek_pos, message)
+
+
+@handler_client.on_message(filters.group & filters.command("seekback"))
+async def seekback_handler(client, message: Message):
+    args = message.text.split()
+    if len(args) < 2 or not args[1].isdigit():
+        await message.reply("❌ Usage: /seekback <seconds>")
+        return
+
+    chat_id = message.chat.id
+    if chat_id not in music_queue or not music_queue[chat_id]:
+        await message.reply("❌ Nothing is playing.")
+        return
+
+    seconds = int(args[1])
+    song = music_queue[chat_id][0]
+    elapsed = int(time.time() - song.get("start_time", time.time()))
+    seek_pos = max(0, elapsed - seconds)
+
+    await restart_with_seek(chat_id, seek_pos, message)
+
+
+# ==============================
+# Clear queue when VC ends
+# ==============================
+@call_py.on_stream_end()
+async def on_stream_end_handler(_, update):
+    chat_id = update.chat_id
+    if chat_id in music_queue:
+        music_queue.pop(chat_id, None)
+    try:
+        await call_py.leave_call(chat_id)
+    except Exception:
+        pass
+    await bot.send_message(chat_id, "✅ Voice chat ended — queue cleared.", parse_mode="HTML")
+
+
+# ==============================
+# Ping command for MODS only
+# ==============================
+@handler_client.on_message(filters.command("ping"))
+async def ping_command(client, message: Message):
+    user_id = message.from_user.id
+    if user_id not in MODS:
+        return
+
+    start = datetime.now()
+    msg = await message.reply_text("📡 Pinging...")
+    end = datetime.now()
+
+    latency = (end - start).total_seconds()
+    uptime = datetime.now() - datetime.fromtimestamp(BOT_START_TIME)
+    days = uptime.days
+    hours, remainder = divmod(uptime.seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    await msg.edit_text(
+        f"<b>Pong!</b> <code>{latency:.2f}s</code>\n"
+        f"<b>Uptime</b> - <code>{days}d {hours}h {minutes}m {seconds}s</code>\n"
+        f"<b>Bot of</b> <a href='https://t.me/PraiseTheFraud'>F U R Y</a>",
+        parse_mode="HTML",
+        disable_web_page_preview=True
+    )
+
 
 @handler_client.on_callback_query()
 async def callback_handler(client, cq: CallbackQuery):
