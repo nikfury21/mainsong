@@ -483,6 +483,131 @@ async def play_command(client: Client, message: Message):
 
 
 
+
+@handler_client.on_message(filters.command("vplay"))
+async def vplay_command(client: Client, message: Message):
+    """
+    /vplay <query> — Stream YouTube video (with video + audio) in VC.
+    """
+    query = " ".join(message.command[1:]).strip()
+    if not query:
+        await message.reply_text("Please provide a video name after /vplay.")
+        return
+
+    await message.reply_text(f"🎬 Searching YouTube for “{query}”...")
+
+    async with aiohttp.ClientSession() as session:
+        # 🔎 1. Search YouTube
+        video_id = await search_youtube_video_id(session, query)
+        if not video_id:
+            await message.reply_text("❌ Could not find a video for that query.")
+            return
+
+        # 🕒 2. Get metadata
+        yt_api_url = (
+            f"https://www.googleapis.com/youtube/v3/videos"
+            f"?part=snippet,contentDetails&id={video_id}&key={YOUTUBE_API_KEY}"
+        )
+
+        video_title, duration_seconds = query, 0
+        try:
+            async with session.get(yt_api_url) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    items = data.get("items", [])
+                    if items:
+                        snippet = items[0].get("snippet", {})
+                        content = items[0].get("contentDetails", {})
+                        video_title = snippet.get("title", query)
+                        duration_seconds = iso8601_to_seconds(content.get("duration"))
+        except Exception:
+            pass
+
+        # 🎵 3. Use RapidAPI MP3 (for audio) — placeholder stream
+        stream_url = await get_mp3_url_rapidapi(session, video_id)
+        if not stream_url:
+            await message.reply_text("❌ Could not fetch video stream link.")
+            return
+
+    chat_id = message.chat.id
+    readable_duration = format_time(duration_seconds or 0)
+    thumb_url = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+
+    # 🎧 4. Check if already playing
+    try:
+        active_calls = call_py.calls
+        if asyncio.iscoroutine(active_calls):
+            active_calls = await active_calls
+        active_chats = list(getattr(active_calls, "keys", lambda: [])())
+    except Exception:
+        active_chats = []
+
+    # If playing — add to queue
+    if chat_id in active_chats:
+        song_data = {
+            "title": video_title,
+            "url": stream_url,
+            "vid": video_id,
+            "user": message.from_user,
+            "duration": duration_seconds or 180,
+            "video": True,
+        }
+        pos = add_to_queue(chat_id, song_data)
+        await message.reply_text(
+            f"<b>🎥 Added video to queue at #{pos}</b>\n\n"
+            f"<b>Title:</b> <i>{video_title}</i>\n"
+            f"<b>Duration:</b> <u>{readable_duration}</u>\n"
+            f"<b>Requested by:</b> <a href='tg://user?id={message.from_user.id}'>{message.from_user.first_name}</a>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    # 🎬 5. Play immediately
+    try:
+        await call_py.play(chat_id, MediaStream(stream_url, video_flags=MediaStream.Flags.ENABLE))
+
+        music_queue[chat_id] = [{
+            "title": video_title,
+            "url": stream_url,
+            "vid": video_id,
+            "user": message.from_user,
+            "duration": duration_seconds or 180,
+            "video": True,
+            "start_time": time.time(),
+        }]
+
+        caption = (
+            "<blockquote>"
+            "<b>🎥 <u>Now Streaming Video</u></b>\n\n"
+            f"<b>❍ Title:</b> <i>{video_title}</i>\n"
+            f"<b>❍ Requested by:</b> <a href='tg://user?id={message.from_user.id}'>{message.from_user.first_name}</a>"
+            "</blockquote>"
+        )
+
+        bar = get_progress_bar(0, duration_seconds or 180)
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
+             InlineKeyboardButton("▶ Resume", callback_data="resume"),
+             InlineKeyboardButton("⏭ Skip", callback_data="skip")],
+            [InlineKeyboardButton(bar, callback_data="progress")]
+        ])
+
+        msg = await message.reply_photo(
+            photo=thumb_url,
+            caption=caption,
+            reply_markup=kb,
+            parse_mode=ParseMode.HTML,
+        )
+
+        asyncio.create_task(update_progress_message(chat_id, msg, time.time(), duration_seconds or 180, caption))
+        asyncio.create_task(auto_next_timer(chat_id, duration_seconds or 180))
+
+    except Exception as e:
+        log.exception("Video playback failed: %s", e)
+        await message.reply_text(f"❌ Could not play video:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
+
+
+
 async def handle_next_in_queue(chat_id: int):
     if chat_id in music_queue and music_queue[chat_id]:
         next_song = music_queue[chat_id].pop(0)
