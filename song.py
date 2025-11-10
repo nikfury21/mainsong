@@ -564,7 +564,8 @@ async def vplay_command(client: Client, message: Message):
 
     # 🎬 5. Play immediately
     try:
-        await call_py.play(chat_id, MediaStream(stream_url, video_flags=MediaStream.Flags.ENABLE))
+        await call_py.play(chat_id, MediaStream(stream_url, video=True))
+
 
         music_queue[chat_id] = [{
             "title": video_title,
