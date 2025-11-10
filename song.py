@@ -344,7 +344,7 @@ async def play_command(client: Client, message: Message):
     
     # Send sticker when command starts
     try:
-        await message.reply_sticker("CAACAgQAAxUAAWkKLkGIixUCa-zV6uEsHsYplBD-AALCGgACLVlRUIUYbMPxtAKWNgQ")
+        await message.reply_sticker("CAACAgQAAxUAAWkPQRUy37GVR42R2w26sKQx4FKBAAKrGQACQwl4UJ1u2xb-mMqINgQ")
     except Exception:
         pass
 
@@ -425,13 +425,23 @@ async def play_command(client: Client, message: Message):
         log.info("Attempting to play in chat %s stream=%s", chat_id, mp3)
         try:
             await call_py.play(chat_id, MediaStream(mp3, video_flags=MediaStream.Flags.IGNORE))
+            # Store current song info so /seek and /seekback can work
+            music_queue[chat_id] = [{
+                "title": video_title,
+                "url": mp3,
+                "vid": vid,
+                "user": message.from_user,
+                "duration": duration_seconds or 180,
+                "start_time": time.time()
+            }]
+
         except Exception as e:
             if "FLOOD_WAIT" in str(e):
                 await message.reply_text("🚫 Telegram asked to wait a bit before joining the voice chat. Try again in a minute.")
             elif "INTERDC_X_CALL_RICH_ERROR" in str(e):
                 await message.reply_text("⚠️ Telegram servers are having trouble connecting the voice call. Please try again later.")
             else:
-                await message.reply_text(f"❌ Voice playback error:\n<code>{e}</code>", parse_mode="html")
+                await message.reply_text(f"❌ Voice playback error:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
             return
 
         caption = (
@@ -480,6 +490,10 @@ async def handle_next_in_queue(chat_id: int):
             # ✅ Instead of leaving VC, just change the stream
             if hasattr(call_py, "change_stream"):
                 await call_py.change_stream(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
+                # Mark this new song as current for /seek tracking
+                music_queue[chat_id] = [next_song]
+                next_song["start_time"] = time.time()
+
             elif hasattr(call_py, "play"):
                 # fallback for older PyTgCalls builds
                 await call_py.play(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
@@ -709,7 +723,7 @@ try:
             await call_py.leave_call(chat_id)
         except Exception:
             pass
-        await bot.send_message(chat_id, "✅ Voice chat ended — queue cleared.", parse_mode="HTML")
+        await bot.send_message(chat_id, "✅ Voice chat ended — queue cleared.", parse_mode=ParseMode.HTML)
 except Exception:
     log.warning("PyTgCalls version may not support on_stream_end, using timer fallback.")
 
@@ -756,7 +770,7 @@ async def ping_command(client, message: Message):
         f"<b>Pong!</b> <code>{latency:.2f}s</code>\n"
         f"<b>Uptime</b> - <code>{uptime_str}</code>\n"
         f"<b>Bot of</b> <a href='https://t.me/PraiseTheFraud'>F U R Y</a>",
-        parse_mode="HTML",
+        parse_mode=ParseMode.HTML,
         disable_web_page_preview=True
     )
 
@@ -906,4 +920,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
