@@ -649,29 +649,50 @@ def parse_duration_str(duration_str):
     return 0
 
 
-async def seek_in_current(chat_id: int, new_pos: int, message: Message):
-    """Seeks to a position within the current stream."""
+import asyncio
+import time
+from pytgcalls.types import MediaStream
+
+async def restart_with_seek(chat_id: int, seek_pos: int, message: Message):
+    """Restart playback at a given position using FFmpeg trim."""
     if chat_id not in music_queue or not music_queue[chat_id]:
         await message.reply("❌ Nothing is playing.")
         return
 
-    song = music_queue[chat_id][0]
-    duration = int(song.get("duration", 0))
-
-    # Clamp seek position
-    new_pos = max(0, min(new_pos, duration))
+    song_info = music_queue[chat_id][0]
+    media_url = song_info["url"]
+    title = song_info["title"]
 
     try:
-        if hasattr(call_py, "change_stream"):
-            await call_py.change_stream(chat_id, MediaStream(song["url"], video_flags=MediaStream.Flags.IGNORE))
-        else:
-            await call_py.play(chat_id, MediaStream(song["url"], video_flags=MediaStream.Flags.IGNORE))
+        # stop or leave current VC before replaying
+        try:
+            await call_py.leave_call(chat_id)
+        except Exception:
+            pass
 
-        # Update song start time
-        song["start_time"] = time.time() - new_pos
-        await message.reply(f"⏩ Seeked to {format_time(new_pos)} in **{song['title']}**")
+        trimmed_path = f"seeked_{chat_id}.mp3"
+
+        # run ffmpeg to trim from seek_pos
+        cmd = [
+            "ffmpeg", "-y",
+            "-ss", str(seek_pos),
+            "-i", media_url,
+            "-acodec", "copy",
+            trimmed_path
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        await proc.communicate()
+
+        # replay trimmed file
+        await call_py.play(chat_id, MediaStream(trimmed_path, video_flags=MediaStream.Flags.IGNORE))
+        song_info["start_time"] = time.time() - seek_pos
+
+        await message.reply(f"⏩ Seeked to {format_time(seek_pos)} in **{title}**")
+
     except Exception as e:
-        await message.reply(f"❌ Seek failed: {e}")
+        await message.reply(f"❌ Failed to seek: {e}")
 
 
 @handler_client.on_message(filters.group & filters.command("seek"))
@@ -686,10 +707,16 @@ async def seek_forward(client, message: Message):
         await message.reply("❌ Nothing is playing.")
         return
 
-    song = music_queue[chat_id][0]
-    elapsed = int(time.time() - song.get("start_time", time.time()))
-    new_pos = elapsed + int(args[1])
-    await seek_in_current(chat_id, new_pos, message)
+    seconds = int(args[1])
+    song_info = music_queue[chat_id][0]
+    elapsed = int(time.time() - song_info.get("start_time", time.time()))
+    seek_pos = elapsed + seconds
+
+    duration = int(song_info.get("duration", 0))
+    if seek_pos >= duration:
+        seek_pos = duration
+
+    await restart_with_seek(chat_id, seek_pos, message)
 
 
 @handler_client.on_message(filters.group & filters.command("seekback"))
@@ -704,11 +731,12 @@ async def seek_backward(client, message: Message):
         await message.reply("❌ Nothing is playing.")
         return
 
-    song = music_queue[chat_id][0]
-    elapsed = int(time.time() - song.get("start_time", time.time()))
-    new_pos = max(0, elapsed - int(args[1]))
-    await seek_in_current(chat_id, new_pos, message)
+    seconds = int(args[1])
+    song_info = music_queue[chat_id][0]
+    elapsed = int(time.time() - song_info.get("start_time", time.time()))
+    seek_pos = max(0, elapsed - seconds)
 
+    await restart_with_seek(chat_id, seek_pos, message)
 
 # ==============================
 # Auto queue clear when VC ends
