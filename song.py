@@ -14,6 +14,7 @@ from pyrogram import Client, filters, idle
 from pyrogram.types import Message
 from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream
+from pytgcalls.types import StreamType
 # --- Compatibility handling for PyTgCalls versions ---
 try:
     from pytgcalls import StreamType
@@ -564,7 +565,7 @@ async def vplay_command(client: Client, message: Message):
 
     # 🎬 5. Play immediately
     try:
-        await call_py.play(chat_id, MediaStream(stream_url, video=True))
+        await call_py.play(chat_id, MediaStream(stream_url), stream_type=StreamType().local_video)
 
 
         music_queue[chat_id] = [{
