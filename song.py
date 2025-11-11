@@ -426,14 +426,15 @@ async def play_command(client: Client, message: Message):
         try:
             await call_py.play(chat_id, MediaStream(mp3, video_flags=MediaStream.Flags.IGNORE))
             # Store current song info so /seek and /seekback can work
-            music_queue[chat_id] = [{
+            current_song[chat_id] = {
                 "title": video_title,
                 "url": mp3,
                 "vid": vid,
                 "user": message.from_user,
                 "duration": duration_seconds or 180,
                 "start_time": time.time()
-            }]
+            }
+
 
         except Exception as e:
             if "FLOOD_WAIT" in str(e):
@@ -488,60 +489,55 @@ async def play_command(client: Client, message: Message):
 
 
 async def handle_next_in_queue(chat_id: int):
-    if chat_id in music_queue and music_queue[chat_id]:
-        next_song = music_queue[chat_id].pop(0)
-        try:
-            # ✅ Instead of leaving VC, just change the stream
-            if hasattr(call_py, "change_stream"):
-                await call_py.change_stream(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
-                # Mark this new song as current for /seek tracking
-                music_queue[chat_id] = [next_song]
-                next_song["start_time"] = time.time()
+    """Move to the next song in queue or stop playback."""
+    try:
+        # If there are more songs queued
+        if chat_id in music_queue and music_queue[chat_id]:
+            next_song = music_queue[chat_id].pop(0)
+            current_song[chat_id] = next_song
 
-            elif hasattr(call_py, "play"):
-                # fallback for older PyTgCalls builds
-                await call_py.play(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
-            else:
-                raise Exception("No compatible stream change method found.")
+            url = next_song["url"]
+            title = next_song["title"]
+            user = next_song["user"]
 
-            caption = (
-                "<blockquote>"
-                "<b>🎧 <u>hulalala Streaming (Auto Next)</u></b>\n\n"
-                f"<b>❍ Title:</b> <i>{next_song['title']}</i>\n"
-                f"<b>❍ Requested by:</b> "
-                f"<a href='tg://user?id={next_song['user'].id}'>"
-                f"<u>{next_song['user'].first_name}</u></a>"
-                "</blockquote>"
+            await call_py.play(chat_id, MediaStream(url, video_flags=MediaStream.Flags.IGNORE))
+
+            # Announce next song
+            await bot.send_message(
+                chat_id,
+                f"🎶 Now playing: <b>{title}</b>\n👤 Requested by {user.mention if user else 'unknown'}",
+                parse_mode=ParseMode.HTML,
             )
 
-            bar = get_progress_bar(0, next_song["duration"])
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
-                 InlineKeyboardButton("▶ Resume", callback_data="resume"),
-                 InlineKeyboardButton("⏭ Skip", callback_data="skip")],
-                [InlineKeyboardButton(bar, callback_data="progress")]
-            ])
-            thumb = f"https://img.youtube.com/vi/{next_song['vid']}/hqdefault.jpg"
-            msg = await bot.send_photo(chat_id, thumb, caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
+            # Schedule next transition after duration
+            duration = next_song.get("duration", 180)
+            await asyncio.sleep(duration)
+            await handle_next_in_queue(chat_id)
 
-            # Start progress updater + auto next
-            asyncio.create_task(update_progress_message(chat_id, msg, time.time(), next_song["duration"], caption))
-            asyncio.create_task(auto_next_timer(chat_id, next_song["duration"] or 180))
-
-        except Exception as e:
-            await bot.send_message(chat_id, f"⚠️ Could not auto-play next queued song:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
-    else:
-        # 🧹 Leave VC only when queue is empty
-        if chat_id in music_queue:
+        else:
+            # Queue empty → stop and clean up
+            current_song.pop(chat_id, None)
             music_queue.pop(chat_id, None)
-        try:
-            if hasattr(call_py, "leave_call"):
-                await call_py.leave_call(chat_id)
-            elif hasattr(call_py, "stop"):
-                await call_py.stop(chat_id)
-        except Exception:
-            pass
-        await bot.send_message(chat_id, "✅ <b>Queue finished and cleared.</b>", parse_mode=ParseMode.HTML)
+
+            try:
+                if hasattr(call_py, "leave_call"):
+                    await call_py.leave_call(chat_id)
+            except Exception:
+                pass
+
+            await bot.send_message(
+                chat_id,
+                "✅ Playback finished — queue is empty.",
+                parse_mode=ParseMode.HTML,
+            )
+
+    except Exception as e:
+        print(f"❌ handle_next_in_queue error: {e}")
+        await bot.send_message(
+            chat_id,
+            f"⚠️ Error while switching tracks:\n<code>{e}</code>",
+            parse_mode=ParseMode.HTML,
+        )
 
 
 
