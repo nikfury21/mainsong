@@ -1,85 +1,153 @@
-# vplay_handler.py
-import os
+# vplay_handler.py — video playback support for Telegram voice chats
 import asyncio
-import aiohttp
+import time
 import logging
+import aiohttp
 from pyrogram import Client, filters
-from pytgcalls import PyTgCalls
-from pytgcalls.types import MediaStream
 from pyrogram.enums import ParseMode
+from pytgcalls_video import PyTgCalls, MediaStream
 
-# Import your shared userbot from error.py
-from error import userbot, search_youtube_video_id, RAPIDAPI_KEY, YOUTUBE_API_KEY
-
-# Optional: use a second PyTgCalls instance just for video
-call_video = PyTgCalls(userbot)
-
+# ========== Logging ==========
 log = logging.getLogger("vplay")
+logging.basicConfig(level=logging.INFO)
 
-async def get_video_url_rapidapi(session, video_id: str):
-    """Fetch downloadable MP4 video link via RapidAPI or fallback."""
+# ========== Initialize userbot & pytgcalls video ==========
+from os import getenv
+
+API_ID = int(getenv("API_ID", "0"))
+API_HASH = getenv("API_HASH")
+USERBOT_SESSION = getenv("USERBOT_SESSION")
+
+if not (API_ID and API_HASH and USERBOT_SESSION):
+    raise RuntimeError("API_ID, API_HASH, and USERBOT_SESSION must be set")
+
+userbot_video = Client("video_userbot", api_id=API_ID, api_hash=API_HASH, session_string=USERBOT_SESSION)
+vcall_py = PyTgCalls(userbot_video)
+
+# ========== YouTube Helpers ==========
+YOUTUBE_API_KEY = getenv("YOUTUBE_API_KEY")
+RAPIDAPI_KEY = getenv("RAPIDAPI_KEY")
+
+async def search_youtube_video_id(session, query: str):
+    """Search YouTube and return first video ID"""
+    url = "https://www.googleapis.com/youtube/v3/search"
+    params = {
+        "part": "snippet",
+        "q": query,
+        "key": YOUTUBE_API_KEY,
+        "maxResults": 1,
+        "type": "video"
+    }
+    async with session.get(url, params=params) as resp:
+        data = await resp.json()
+        items = data.get("items", [])
+        if items:
+            return items[0]["id"]["videoId"]
+    return None
+
+
+async def get_video_link_rapidapi(session, vid: str):
+    """Fetch MP4 direct link via RapidAPI (YouTube MP3/MP4 downloader)"""
     url = "https://youtube-mp36.p.rapidapi.com/dl"
     headers = {
         "X-RapidAPI-Key": RAPIDAPI_KEY,
         "X-RapidAPI-Host": "youtube-mp36.p.rapidapi.com"
     }
-    params = {"id": video_id}
-    async with session.get(url, headers=headers, params=params) as resp:
-        try:
-            data = await resp.json()
-            return data.get("link") or data.get("url")
-        except Exception:
-            return None
+    params = {"id": vid}
+    for _ in range(6):
+        async with session.get(url, headers=headers, params=params) as resp:
+            try:
+                data = await resp.json()
+            except:
+                data = {}
+            if data.get("status") == "ok" and data.get("link"):
+                return data["link"]
+            await asyncio.sleep(2)
+    return None
 
-@Client.on_message(filters.command("vplay"))
-async def vplay_command(client: Client, message):
-    """Play a YouTube video (with video + audio) in VC."""
-    chat_id = message.chat.id
-    query = " ".join(message.command[1:]).strip()
 
+# ========== /vplay Command ==========
+@userbot_video.on_message(filters.command("vplay"))
+async def vplay_command(client, message):
+    query = " ".join(message.command[1:])
     if not query:
-        await message.reply_text("❌ Usage: /vplay <video name>")
+        await message.reply_text("🎬 Usage: `/vplay <video name>`", parse_mode=ParseMode.MARKDOWN)
         return
 
-    status = await message.reply_text(f"🎬 Searching YouTube for **{query}**...")
+    await message.reply_text(f"🔍 Searching YouTube for **{query}** ...", parse_mode=ParseMode.MARKDOWN)
 
     async with aiohttp.ClientSession() as session:
-        video_id = await search_youtube_video_id(session, query)
-        if not video_id:
-            await status.edit_text("❌ No video found on YouTube.")
+        vid = await search_youtube_video_id(session, query)
+        if not vid:
+            await message.reply_text("❌ No video found.")
             return
 
-        # Try getting downloadable video URL
-        video_url = await get_video_url_rapidapi(session, video_id)
-        if not video_url:
-            await status.edit_text("❌ Could not get a playable link.")
+        yt_link = f"https://www.youtube.com/watch?v={vid}"
+        await message.reply_text(f"📺 Found [YouTube Video]({yt_link})\nFetching direct MP4...", parse_mode=ParseMode.MARKDOWN)
+
+        mp4_link = await get_video_link_rapidapi(session, vid)
+        if not mp4_link:
+            await message.reply_text("❌ Could not get MP4 link.")
             return
 
-        # Prepare video info
-        title = query.title()
-        thumb = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
-
-        # Notify user
-        await status.edit_text(
-            f"🎞 **Streaming video:** {title}\n"
-            f"👤 Requested by: {message.from_user.mention}",
-            parse_mode=ParseMode.MARKDOWN
+    chat_id = message.chat.id
+    try:
+        await vcall_py.join_group_call(
+            chat_id,
+            MediaStream(
+                mp4_link,
+                video_flags=MediaStream.Flags.ENABLE,  # enable video stream
+                audio_flags=MediaStream.Flags.IGNORE
+            ),
         )
 
-        try:
-            # Start streaming (video + audio)
-            await call_video.play(
-                chat_id,
-                MediaStream(video_url)
-            )
+        await message.reply_text(
+            f"🎥 **Now Playing Video:** [{query}]({yt_link})",
+            parse_mode=ParseMode.MARKDOWN,
+            disable_web_page_preview=False
+        )
 
-            await message.reply_photo(
-                photo=thumb,
-                caption=f"🎥 <b>Now Playing:</b> <i>{title}</i>\n"
-                        f"👤 Requested by <b>{message.from_user.first_name}</b>",
-                parse_mode=ParseMode.HTML
-            )
+    except Exception as e:
+        log.error("vplay error: %s", e)
+        await message.reply_text(f"❌ Video playback failed:\n`{e}`", parse_mode=ParseMode.MARKDOWN)
 
-        except Exception as e:
-            await message.reply_text(f"❌ Video stream error:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
-            log.error(f"vplay error: {e}")
+
+# ========== Controls ==========
+@userbot_video.on_message(filters.command("vstop"))
+async def vstop_command(client, message):
+    chat_id = message.chat.id
+    try:
+        await vcall_py.leave_call(chat_id)
+        await message.reply_text("🛑 Video stopped.")
+    except Exception as e:
+        await message.reply_text(f"❌ Failed to stop video: `{e}`", parse_mode=ParseMode.MARKDOWN)
+
+
+@userbot_video.on_message(filters.command("vpause"))
+async def vpause_command(client, message):
+    try:
+        await vcall_py.pause_stream(message.chat.id)
+        await message.reply_text("⏸ Video paused.")
+    except Exception as e:
+        await message.reply_text(f"❌ {e}")
+
+
+@userbot_video.on_message(filters.command("vresume"))
+async def vresume_command(client, message):
+    try:
+        await vcall_py.resume_stream(message.chat.id)
+        await message.reply_text("▶️ Video resumed.")
+    except Exception as e:
+        await message.reply_text(f"❌ {e}")
+
+
+# ========== Startup ==========
+async def start_vplay_service():
+    log.info("Starting video bot...")
+    await userbot_video.start()
+    await vcall_py.start()
+    log.info("✅ Video PyTgCalls client started.")
+    await asyncio.Event().wait()  # keep running
+
+if __name__ == "__main__":
+    asyncio.run(start_vplay_service())
