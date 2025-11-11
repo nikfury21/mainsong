@@ -1,10 +1,8 @@
 git+https://github.com/prashantsahlot/FrozenGram.git
 
 # voice / playback / yt
-py-tgcalls
-# video support for /vplay
-git+https://github.com/pytgcalls/pytgcalls.git
-
+ntgcalls==2.0.6
+py-tgcalls==2.0.6
 yt-dlp
 ffmpeg-python
 
