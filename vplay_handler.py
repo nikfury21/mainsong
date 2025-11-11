@@ -5,7 +5,7 @@ import logging
 import aiohttp
 from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
-from pytgcalls_video import PyTgCalls, MediaStream
+from pytgcalls import PyTgCalls, MediaStream
 
 # ========== Logging ==========
 log = logging.getLogger("vplay")
