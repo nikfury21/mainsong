@@ -1,5 +1,4 @@
 # error.py — complete, Render-ready, Pyrogram + PyTgCalls (MediaStream) based music helpers
-from vplay_handler import *  # import /vplay command + call_video instance
 import os
 import asyncio
 import threading
