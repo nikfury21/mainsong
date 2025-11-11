@@ -1,10 +1,7 @@
 git+https://github.com/prashantsahlot/FrozenGram.git
-
-# voice / playback / yt
-ntgcalls==1.2.3
-py-tgcalls==2.0.6
+py-tgcalls
 yt-dlp
-ffmpeg-python
+ffmpeg-python 
 
 # web / http
 aiohttp
