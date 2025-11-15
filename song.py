@@ -257,7 +257,7 @@ async def song_command(client: Client, message: Message):
         await message.reply_text("❌ Spotify connection failed after 3 retries.")
         return
 
-    # If still no results, try YouTube directly
+    # If no Spotify results → YouTube direct
     if not results or not results.get("tracks", {}).get("items", []):
         await client.send_message(ADMIN, f"No Spotify results for '{user_query}'. Trying YouTube...")
 
@@ -272,17 +272,24 @@ async def song_command(client: Client, message: Message):
                 await message.reply_text("❌ Couldn’t fetch MP3.")
                 return
 
-            # Download + send MP3 file
+            # FIXED: Download + send MP3 via temp file
             try:
                 async with session.get(mp3_url) as r:
-                    mp3_data = await r.read()
+                    mp3_bytes = await r.read()
+
+                fd, temp_path = tempfile.mkstemp(suffix=".mp3")
+                os.close(fd)
+                with open(temp_path, "wb") as f:
+                    f.write(mp3_bytes)
 
                 await client.send_audio(
                     chat_id=message.chat.id,
-                    audio=mp3_data,
+                    audio=temp_path,
                     file_name=f"{user_query}.mp3",
                     caption=f"🎵 {user_query}"
                 )
+
+                os.remove(temp_path)
                 return
 
             except Exception as e:
@@ -325,7 +332,7 @@ async def song_command(client: Client, message: Message):
 
         await client.send_message(ADMIN, "MP3 link received, verifying...")
 
-        # Verify MP3 is audio then send file
+        # HEAD CHECK → if audio, send file
         try:
             async with session.head(mp3_url, timeout=10) as head_resp:
                 content_type = head_resp.headers.get("Content-Type", "")
@@ -334,38 +341,51 @@ async def song_command(client: Client, message: Message):
 
                 if head_resp.status == 200 and "audio" in content_type.lower():
 
-                    # DOWNLOAD + SEND MP3
+                    # FIXED: download + send via temp file
                     async with session.get(mp3_url) as r:
-                        mp3_data = await r.read()
+                        mp3_bytes = await r.read()
+
+                    fd, temp_path = tempfile.mkstemp(suffix=".mp3")
+                    os.close(fd)
+                    with open(temp_path, "wb") as f:
+                        f.write(mp3_bytes)
 
                     await client.send_audio(
                         chat_id=message.chat.id,
-                        audio=mp3_data,
+                        audio=temp_path,
                         file_name=f"{title} - {artist}.mp3",
                         caption=f"🎵 {title} - {artist}"
                     )
+
+                    os.remove(temp_path)
                     return
 
         except Exception as e:
             await client.send_message(ADMIN, f"HEAD check error: {e}")
 
-        # fallback if HEAD fails
+        # FALLBACK → still download & send
         try:
             async with session.get(mp3_url) as r:
-                mp3_data = await r.read()
+                mp3_bytes = await r.read()
+
+            fd, temp_path = tempfile.mkstemp(suffix=".mp3")
+            os.close(fd)
+            with open(temp_path, "wb") as f:
+                f.write(mp3_bytes)
 
             await client.send_audio(
                 chat_id=message.chat.id,
-                audio=mp3_data,
+                audio=temp_path,
                 file_name=f"{title} - {artist}.mp3",
                 caption=f"🎵 {title} - {artist}"
             )
+
+            os.remove(temp_path)
             return
 
         except Exception as e:
             await client.send_message(ADMIN, f"MP3 fallback error: {e}")
             await message.reply_text("❌ Could not send MP3.")
-
 
 @handler_client.on_message(filters.command("play"))
 async def play_command(client: Client, message: Message):
