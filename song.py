@@ -289,7 +289,7 @@ async def song_command(client: Client, message: Message):
 
                 await client.send_audio(
                     chat_id=message.chat.id,
-                    audio=temp_path,
+                    audio=open(temp_path, "rb"),
                     file_name=f"{user_query}.mp3",
                     caption=f"🎵 {user_query}"
                 )
@@ -363,7 +363,7 @@ async def song_command(client: Client, message: Message):
 
                     await client.send_audio(
                         chat_id=message.chat.id,
-                        audio=temp_path,
+                        audio=open(temp_path, "rb"),
                         file_name=f"{title} - {artist}.mp3",
                         caption=f"🎵 {title} - {artist}"
                     )
@@ -391,7 +391,7 @@ async def song_command(client: Client, message: Message):
 
             await client.send_audio(
                 chat_id=message.chat.id,
-                audio=temp_path,
+                audio=open(temp_path, "rb"),
                 file_name=f"{title} - {artist}.mp3",
                 caption=f"🎵 {title} - {artist}"
             )
@@ -403,6 +403,7 @@ async def song_command(client: Client, message: Message):
         except Exception as e:
             await client.send_message(ADMIN, f"MP3 fallback error: {e}")
             await message.reply_text("❌ Could not send MP3.")
+
 
 @handler_client.on_message(filters.command("play"))
 async def play_command(client: Client, message: Message):
