@@ -273,7 +273,11 @@ async def song_command(client: Client, message: Message):
                 await message.reply_text("❌ Couldn’t fetch MP3.")
                 return
 
-            # FIXED: Download + send MP3 via temp file
+            # SENDING MESSAGE + ACTION
+            sending_msg = await message.reply_text("<b><u>Sending audio…</u></b>", parse_mode="HTML")
+            await client.send_chat_action(message.chat.id, "upload_audio")
+
+            # Download + send MP3 via temp file
             try:
                 async with session.get(mp3_url) as r:
                     mp3_bytes = await r.read()
@@ -290,10 +294,12 @@ async def song_command(client: Client, message: Message):
                     caption=f"🎵 {user_query}"
                 )
 
+                await sending_msg.delete()
                 os.remove(temp_path)
                 return
 
             except Exception as e:
+                await sending_msg.edit_text("❌ Error sending audio.")
                 await client.send_message(ADMIN, f"MP3 send error: {e}")
                 await message.reply_text("❌ Error sending MP3.")
                 return
@@ -333,7 +339,7 @@ async def song_command(client: Client, message: Message):
 
         await client.send_message(ADMIN, "MP3 link received, verifying...")
 
-        # HEAD CHECK → if audio, send file
+        # HEAD CHECK
         try:
             async with session.head(mp3_url, timeout=10) as head_resp:
                 content_type = head_resp.headers.get("Content-Type", "")
@@ -342,7 +348,11 @@ async def song_command(client: Client, message: Message):
 
                 if head_resp.status == 200 and "audio" in content_type.lower():
 
-                    # FIXED: download + send via temp file
+                    # SENDING MESSAGE + ACTION
+                    sending_msg = await message.reply_text("<b><u>Sending audio…</u></b>", parse_mode="HTML")
+                    await client.send_chat_action(message.chat.id, "upload_audio")
+
+                    # download + send via temp file
                     async with session.get(mp3_url) as r:
                         mp3_bytes = await r.read()
 
@@ -358,6 +368,7 @@ async def song_command(client: Client, message: Message):
                         caption=f"🎵 {title} - {artist}"
                     )
 
+                    await sending_msg.delete()
                     os.remove(temp_path)
                     return
 
@@ -368,6 +379,10 @@ async def song_command(client: Client, message: Message):
         try:
             async with session.get(mp3_url) as r:
                 mp3_bytes = await r.read()
+
+            # SENDING MESSAGE + ACTION
+            sending_msg = await message.reply_text("<b><u>Sending audio…</u></b>", parse_mode="HTML")
+            await client.send_chat_action(message.chat.id, "upload_audio")
 
             fd, temp_path = tempfile.mkstemp(suffix=".mp3")
             os.close(fd)
@@ -381,6 +396,7 @@ async def song_command(client: Client, message: Message):
                 caption=f"🎵 {title} - {artist}"
             )
 
+            await sending_msg.delete()
             os.remove(temp_path)
             return
 
