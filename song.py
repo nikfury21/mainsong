@@ -119,6 +119,31 @@ def iso8601_to_seconds(iso: str) -> int:
         return h * 3600 + m_ * 60 + s
     except Exception:
         return 0
+async def download_with_progress(session, url, progress_msg):
+    async with session.get(url) as resp:
+        total = int(resp.headers.get("Content-Length", 0))
+        downloaded = 0
+        chunks = []
+        last_update = 0
+
+        async for chunk in resp.content.iter_chunked(1024 * 64):
+            downloaded += len(chunk)
+            chunks.append(chunk)
+
+            percent = int((downloaded / total) * 100) if total else 0
+
+            # update every +5%
+            if percent - last_update >= 5:
+                last_update = percent
+                try:
+                    await progress_msg.edit_text(
+                        f"<b><u>Downloading… {percent}%</u></b>",
+                        parse_mode="HTML"
+                    )
+                except:
+                    pass
+
+        return b"".join(chunks)
 
 
 def get_progress_bar(elapsed: float, total: float, bar_len: int = 14) -> str:
@@ -216,14 +241,83 @@ async def song_command(client: Client, message: Message):
     global sp
     ADMIN = 8353079084
 
+    import tempfile
+    import os
+
+    async def _format_progress(step_idx: int, total_steps: int, percent: int = None):
+        # Build the HTML message for the given step and percent (no platform names)
+        header = "<b><u>Processing Request</u></b>\n\n"
+        steps = [
+            "Searching…",
+            "Matching results…",
+            "Obtaining file link…",
+            "Verifying file…",
+            "Downloading…",
+            "Preparing audio…"
+        ]
+        lines = []
+        for i, s in enumerate(steps, start=1):
+            if i == step_idx and percent is not None and i == 5:
+                lines.append(f"• Step {i}/{total_steps}: {s} {percent}%")
+            elif i == step_idx:
+                lines.append(f"• Step {i}/{total_steps}: {s}")
+            else:
+                # keep previous steps visible but not showing percent
+                lines.append(f"• Step {i}/{total_steps}: {s}" if i < step_idx else f"• Step {i}/{total_steps}: {s}")
+        return header + "\n".join(lines)
+
+    async def download_with_progress(session, url, progress_msg):
+        """
+        Download the URL in chunks, updating progress_msg periodically.
+        Returns the bytes of the downloaded file.
+        """
+        async with session.get(url) as resp:
+            total = int(resp.headers.get("Content-Length", 0))
+            downloaded = 0
+            chunks = []
+            last_percent = -1
+            # Default chunk size
+            async for chunk in resp.content.iter_chunked(64 * 1024):
+                if not chunk:
+                    continue
+                chunks.append(chunk)
+                downloaded += len(chunk)
+                percent = int(downloaded * 100 / total) if total else 0
+                # update when percent changes by >=1 (or every chunk if unknown size)
+                if total:
+                    if percent != last_percent and (percent % 1 == 0):
+                        last_percent = percent
+                        try:
+                            await progress_msg.edit_text(await _format_progress(5, 6, percent), parse_mode=ParseMode.HTML)
+                        except Exception:
+                            pass
+                else:
+                    # unknown total: show downloaded KB every ~512KB
+                    kb = downloaded // 1024
+                    if kb % 512 == 0:
+                        try:
+                            await progress_msg.edit_text(await _format_progress(5, 6, None) + f"\n\nDownloaded ~{kb} KB", parse_mode=ParseMode.HTML)
+                        except Exception:
+                            pass
+            return b"".join(chunks)
+
     user_query = " ".join(message.command[1:])
     if not user_query:
         await message.reply_text("Please provide a song name after /song.")
         return
 
-    # SEND ONLY TO ADMIN
+    # Initial progress message (Step 1)
+    progress_msg = await message.reply_text(await _format_progress(1, 6), parse_mode=ParseMode.HTML)
+
+    # SEND ONLY TO ADMIN (unchanged)
     await client.send_message(ADMIN, f"Searching Spotify for '{user_query}'...")
     results = None
+
+    # --- Step 1: Searching ---
+    try:
+        await progress_msg.edit_text(await _format_progress(1, 6), parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
 
     for attempt in range(3):
         try:
@@ -255,56 +349,136 @@ async def song_command(client: Client, message: Message):
                 await client.send_message(ADMIN, f"Reinit error: {e2}")
                 await asyncio.sleep(2)
     else:
-        await message.reply_text("❌ Spotify connection failed after 3 retries.")
+        try:
+            await progress_msg.edit_text("<b><u>Processing Request</u></b>\n\n• ❌ Search failed. See admin.", parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
         return
 
-    # If no Spotify results → YouTube direct
+    # --- Step 2: Matching results ---
+    try:
+        await progress_msg.edit_text(await _format_progress(2, 6), parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
+
+    # If no results from the search, go directly to retrieving file link flow
     if not results or not results.get("tracks", {}).get("items", []):
         await client.send_message(ADMIN, f"No Spotify results for '{user_query}'. Trying YouTube...")
 
         async with aiohttp.ClientSession() as session:
+            # --- Step 3: Obtaining file link ---
+            try:
+                await progress_msg.edit_text(await _format_progress(3, 6), parse_mode=ParseMode.HTML)
+            except Exception:
+                pass
+
             video_id = await search_youtube_video_id(session, user_query)
             if not video_id:
-                await message.reply_text("Could not find anything on YouTube.")
+                try:
+                    await progress_msg.edit_text("<b><u>Processing Request</u></b>\n\n• ❌ Could not obtain file link.", parse_mode=ParseMode.HTML)
+                except Exception:
+                    pass
                 return
 
             mp3_url = await get_mp3_url_rapidapi(session, video_id)
             if not mp3_url:
-                await message.reply_text("❌ Couldn’t fetch MP3.")
+                try:
+                    await progress_msg.edit_text("<b><u>Processing Request</u></b>\n\n• ❌ Couldn’t fetch file link.", parse_mode=ParseMode.HTML)
+                except Exception:
+                    pass
                 return
 
-            # SENDING MESSAGE + ACTION
-            sending_msg = await message.reply_text("Sending audio…")
-            await client.send_chat_action(message.chat.id, "upload_audio")
-
-            # Download + send MP3 via temp file
+            # --- Step 4: Verifying file ---
             try:
-                async with session.get(mp3_url) as r:
-                    mp3_bytes = await r.read()
+                await progress_msg.edit_text(await _format_progress(4, 6), parse_mode=ParseMode.HTML)
+            except Exception:
+                pass
 
+            try:
+                async with session.head(mp3_url, timeout=10) as head_resp:
+                    content_type = head_resp.headers.get("Content-Type", "")
+                    dbg = f"HEAD check -> status={head_resp.status}, content_type={content_type}"
+                    await client.send_message(ADMIN, dbg[:3800])
+            except Exception as e:
+                await client.send_message(ADMIN, f"HEAD check error: {e}")
+
+            # --- Step 5: Downloading with progress ---
+            try:
+                await progress_msg.edit_text(await _format_progress(5, 6, 0), parse_mode=ParseMode.HTML)
+            except Exception:
+                pass
+
+            try:
+                mp3_bytes = await download_with_progress(session, mp3_url, progress_msg)
+            except Exception as e:
+                await client.send_message(ADMIN, f"Download error: {e}")
+                try:
+                    await progress_msg.edit_text("<b><u>Processing Request</u></b>\n\n• ❌ Download failed.", parse_mode=ParseMode.HTML)
+                except Exception:
+                    pass
+                return
+
+            # --- Step 6: Preparing audio ---
+            try:
+                await progress_msg.edit_text(await _format_progress(6, 6), parse_mode=ParseMode.HTML)
+            except Exception:
+                pass
+
+            # Write file to temp and upload
+            try:
                 fd, temp_path = tempfile.mkstemp(suffix=".mp3")
                 os.close(fd)
                 with open(temp_path, "wb") as f:
                     f.write(mp3_bytes)
 
-                await client.send_audio(
-                    chat_id=message.chat.id,
-                    audio=open(temp_path, "rb"),
-                    file_name=f"{user_query}.mp3",
-                    caption=f"🎵 {user_query}"
-                )
+                # Final message -> uploading
+                try:
+                    await progress_msg.edit_text("<b><u>Processing Request</u></b>\n\n• Completed.\n• Uploading audio…", parse_mode=ParseMode.HTML)
+                except Exception:
+                    pass
 
-                await sending_msg.delete()
-                os.remove(temp_path)
+                # ensure chat action
+                try:
+                    await client.send_chat_action(message.chat.id, "upload_audio")
+                except Exception:
+                    pass
+
+                # send audio (open file pointer)
+                with open(temp_path, "rb") as audio_file:
+                    await client.send_audio(
+                        chat_id=message.chat.id,
+                        audio=audio_file,
+                        file_name=f"{user_query}.mp3",
+                        caption=f"🎵 {user_query}"
+                    )
+
+                # delete progress message and temp file
+                try:
+                    await progress_msg.delete()
+                except Exception:
+                    pass
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
                 return
 
             except Exception as e:
-                await sending_msg.edit_text("❌ Error sending audio.")
                 await client.send_message(ADMIN, f"MP3 send error: {e}")
-                await message.reply_text("❌ Error sending MP3.")
+                try:
+                    await progress_msg.edit_text("<b><u>Processing Request</u></b>\n\n• ❌ Error sending audio.", parse_mode=ParseMode.HTML)
+                except Exception:
+                    pass
                 return
 
-    # pick best track
+    # If we had Spotify results, continue original flow picking the best track
+    # --- Step 2 continuation: Matching results done ---
+    try:
+        await progress_msg.edit_text(await _format_progress(2, 6), parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
+
+    # pick best track (unchanged)
     track = None
     for t in tracks:
         if "remix" not in t["name"].lower() and "cover" not in t["name"].lower():
@@ -320,26 +494,47 @@ async def song_command(client: Client, message: Message):
     await client.send_message(ADMIN, f"Found on Spotify: {title} by {artist}. Searching YouTube...")
 
     async with aiohttp.ClientSession() as session:
+        # Step 3: Obtaining file link...
+        try:
+            await progress_msg.edit_text(await _format_progress(3, 6), parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+
         try:
             video_id = await search_youtube_video_id(session, combined_query)
         except Exception as e:
             await client.send_message(ADMIN, f"YouTube search failed: {e}")
+            try:
+                await progress_msg.edit_text("<b><u>Processing Request</u></b>\n\n• ❌ Could not obtain file link.", parse_mode=ParseMode.HTML)
+            except Exception:
+                pass
             return
 
         if not video_id:
-            await message.reply_text("Could not find the video on YouTube.")
+            try:
+                await progress_msg.edit_text("<b><u>Processing Request</u></b>\n\n• ❌ Could not find the video.", parse_mode=ParseMode.HTML)
+            except Exception:
+                pass
             return
 
         await client.send_message(ADMIN, f"Found YouTube video (ID: {video_id}). Fetching MP3...")
 
         mp3_url = await get_mp3_url_rapidapi(session, video_id)
         if not mp3_url:
-            await message.reply_text("❌ Could not retrieve MP3 link.")
+            try:
+                await progress_msg.edit_text("<b><u>Processing Request</u></b>\n\n• ❌ Could not retrieve file link.", parse_mode=ParseMode.HTML)
+            except Exception:
+                pass
             return
 
         await client.send_message(ADMIN, "MP3 link received, verifying...")
 
-        # HEAD CHECK
+        # HEAD CHECK → if audio, send file
+        try:
+            await progress_msg.edit_text(await _format_progress(4, 6), parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+
         try:
             async with session.head(mp3_url, timeout=10) as head_resp:
                 content_type = head_resp.headers.get("Content-Type", "")
@@ -348,62 +543,131 @@ async def song_command(client: Client, message: Message):
 
                 if head_resp.status == 200 and "audio" in content_type.lower():
 
-                    # SENDING MESSAGE + ACTION
-                    sending_msg = await message.reply_text("Sending audio…")
-                    await client.send_chat_action(message.chat.id, "upload_audio")
+                    # Step 5: Downloading
+                    try:
+                        await progress_msg.edit_text(await _format_progress(5, 6, 0), parse_mode=ParseMode.HTML)
+                    except Exception:
+                        pass
 
-                    # download + send via temp file
-                    async with session.get(mp3_url) as r:
-                        mp3_bytes = await r.read()
+                    try:
+                        mp3_bytes = await download_with_progress(session, mp3_url, progress_msg)
+                    except Exception as e:
+                        await client.send_message(ADMIN, f"Download error: {e}")
+                        try:
+                            await progress_msg.edit_text("<b><u>Processing Request</u></b>\n\n• ❌ Download failed.", parse_mode=ParseMode.HTML)
+                        except Exception:
+                            pass
+                        return
 
-                    fd, temp_path = tempfile.mkstemp(suffix=".mp3")
-                    os.close(fd)
-                    with open(temp_path, "wb") as f:
-                        f.write(mp3_bytes)
+                    # Step 6: Preparing & upload
+                    try:
+                        await progress_msg.edit_text(await _format_progress(6, 6), parse_mode=ParseMode.HTML)
+                    except Exception:
+                        pass
 
-                    await client.send_audio(
-                        chat_id=message.chat.id,
-                        audio=open(temp_path, "rb"),
-                        file_name=f"{title} - {artist}.mp3",
-                        caption=f"🎵 {title} - {artist}"
-                    )
+                    try:
+                        fd, temp_path = tempfile.mkstemp(suffix=".mp3")
+                        os.close(fd)
+                        with open(temp_path, "wb") as f:
+                            f.write(mp3_bytes)
 
-                    await sending_msg.delete()
-                    os.remove(temp_path)
-                    return
+                        try:
+                            await progress_msg.edit_text("<b><u>Processing Request</u></b>\n\n• Completed.\n• Uploading audio…", parse_mode=ParseMode.HTML)
+                        except Exception:
+                            pass
+
+                        try:
+                            await client.send_chat_action(message.chat.id, "upload_audio")
+                        except Exception:
+                            pass
+
+                        with open(temp_path, "rb") as audio_file:
+                            await client.send_audio(
+                                chat_id=message.chat.id,
+                                audio=audio_file,
+                                file_name=f"{title} - {artist}.mp3",
+                                caption=f"🎵 {title} - {artist}"
+                            )
+
+                        try:
+                            await progress_msg.delete()
+                        except Exception:
+                            pass
+                        try:
+                            os.remove(temp_path)
+                        except Exception:
+                            pass
+                        return
+
+                    except Exception as e:
+                        await client.send_message(ADMIN, f"MP3 send error: {e}")
+                        try:
+                            await progress_msg.edit_text("<b><u>Processing Request</u></b>\n\n• ❌ Error sending audio.", parse_mode=ParseMode.HTML)
+                        except Exception:
+                            pass
+                        return
 
         except Exception as e:
             await client.send_message(ADMIN, f"HEAD check error: {e}")
 
-        # FALLBACK → still download & send
+        # FALLBACK → still download & send (same progress UI)
         try:
-            async with session.get(mp3_url) as r:
-                mp3_bytes = await r.read()
+            await progress_msg.edit_text(await _format_progress(5, 6, 0), parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
 
-            # SENDING MESSAGE + ACTION
-            sending_msg = await message.reply_text("Sending audio…")
-            await client.send_chat_action(message.chat.id, "upload_audio")
+        try:
+            mp3_bytes = await download_with_progress(session, mp3_url, progress_msg)
+        except Exception as e:
+            await client.send_message(ADMIN, f"Download error: {e}")
+            try:
+                await progress_msg.edit_text("<b><u>Processing Request</u></b>\n\n• ❌ Download failed.", parse_mode=ParseMode.HTML)
+            except Exception:
+                pass
+            return
 
+        try:
+            await progress_msg.edit_text(await _format_progress(6, 6), parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+
+        try:
             fd, temp_path = tempfile.mkstemp(suffix=".mp3")
             os.close(fd)
             with open(temp_path, "wb") as f:
                 f.write(mp3_bytes)
 
-            await client.send_audio(
-                chat_id=message.chat.id,
-                audio=open(temp_path, "rb"),
-                file_name=f"{title} - {artist}.mp3",
-                caption=f"🎵 {title} - {artist}"
-            )
+            try:
+                await progress_msg.edit_text("<b><u>Processing Request</u></b>\n\n• Completed.\n• Uploading audio…", parse_mode=ParseMode.HTML)
+            except Exception:
+                pass
 
-            await sending_msg.delete()
-            os.remove(temp_path)
+            try:
+                await client.send_chat_action(message.chat.id, "upload_audio")
+            except Exception:
+                pass
+
+            with open(temp_path, "rb") as audio_file:
+                await client.send_audio(
+                    chat_id=message.chat.id,
+                    audio=audio_file,
+                    file_name=f"{title} - {artist}.mp3",
+                    caption=f"🎵 {title} - {artist}"
+                )
+
+            try:
+                await progress_msg.delete()
+            except Exception:
+                pass
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
             return
 
         except Exception as e:
             await client.send_message(ADMIN, f"MP3 fallback error: {e}")
             await message.reply_text("❌ Could not send MP3.")
-
 
 @handler_client.on_message(filters.command("play"))
 async def play_command(client: Client, message: Message):
