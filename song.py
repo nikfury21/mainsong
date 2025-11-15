@@ -274,7 +274,7 @@ async def song_command(client: Client, message: Message):
                 return
 
             # SENDING MESSAGE + ACTION
-            sending_msg = await message.reply_text("<b><u>Sending audio…</u></b>", parse_mode="HTML")
+            sending_msg = await message.reply_text("Sending audio…")
             await client.send_chat_action(message.chat.id, "upload_audio")
 
             # Download + send MP3 via temp file
@@ -349,7 +349,7 @@ async def song_command(client: Client, message: Message):
                 if head_resp.status == 200 and "audio" in content_type.lower():
 
                     # SENDING MESSAGE + ACTION
-                    sending_msg = await message.reply_text("<b><u>Sending audio…</u></b>", parse_mode="HTML")
+                    sending_msg = await message.reply_text("Sending audio…")
                     await client.send_chat_action(message.chat.id, "upload_audio")
 
                     # download + send via temp file
@@ -381,7 +381,7 @@ async def song_command(client: Client, message: Message):
                 mp3_bytes = await r.read()
 
             # SENDING MESSAGE + ACTION
-            sending_msg = await message.reply_text("<b><u>Sending audio…</u></b>", parse_mode="HTML")
+            sending_msg = await message.reply_text("Sending audio…")
             await client.send_chat_action(message.chat.id, "upload_audio")
 
             fd, temp_path = tempfile.mkstemp(suffix=".mp3")
