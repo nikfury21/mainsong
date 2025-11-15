@@ -1,5 +1,6 @@
 # error.py — complete, Render-ready, Pyrogram + PyTgCalls (MediaStream) based music helpers
 import os
+import tempfile
 import asyncio
 import threading
 import logging
