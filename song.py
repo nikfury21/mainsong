@@ -105,6 +105,29 @@ def format_time(seconds: float) -> str:
 
 import re
 
+
+import yt_dlp
+import asyncio
+import tempfile
+import os
+from functools import partial
+
+def ytdlp_search_and_download_nocookie(query, out_dir):
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": False,
+        "format": "bestaudio/best",
+        "outtmpl": os.path.join(out_dir, "%(title)s.%(ext)s"),
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(f"ytsearch1:{query}", download=True)
+        entry = info["entries"][0] if "entries" in info else info
+        filename = ydl.prepare_filename(entry)
+        return filename, entry
+
+
 def iso8601_to_seconds(iso: str) -> int:
     """Convert ISO-8601 duration (PT#H#M#S) → seconds."""
     if not iso:
@@ -370,80 +393,53 @@ async def song_command(client: Client, message: Message):
             # Step 3: Obtaining file link
             await safe_edit(progress_msg, _single_step_text(3, 6, "Obtaining file link…"), ParseMode.HTML, min_interval=1.0, last_edit_time_holder=last_edit_ref)
 
-            video_id = await search_youtube_video_id(session, user_query)
-            if not video_id:
-                await safe_edit(progress_msg, _single_step_text(3, 6, "❌ Could not obtain file link."), ParseMode.HTML, min_interval=1.0, last_edit_time_holder=last_edit_ref)
-                return
+            # ---- YT-DLP Download (no cookies) ----
+            await safe_edit(progress_msg, _single_step_text(3, 6, "Searching YouTube…"), ParseMode.HTML, min_interval=1.0, last_edit_time_holder=last_edit_ref)
 
-            mp3_url = await get_mp3_url_rapidapi(session, video_id)
-            if not mp3_url:
-                await safe_edit(progress_msg, _single_step_text(3, 6, "❌ Couldn’t fetch file link."), ParseMode.HTML, min_interval=1.0, last_edit_time_holder=last_edit_ref)
-                return
-
-            # Step 4: Verifying file
-            await safe_edit(progress_msg, _single_step_text(4, 6, "Verifying file…"), ParseMode.HTML, min_interval=1.0, last_edit_time_holder=last_edit_ref)
+            loop = asyncio.get_event_loop()
+            out_dir = tempfile.mkdtemp(prefix="song_yt_")
 
             try:
-                async with session.head(mp3_url, timeout=10) as head_resp:
-                    content_type = head_resp.headers.get("Content-Type", "")
-                    dbg = f"HEAD check -> status={head_resp.status}, content_type={content_type}"
-                    await client.send_message(ADMIN, dbg[:3800])
-            except Exception as e:
-                await client.send_message(ADMIN, f"HEAD check error: {e}")
+                filename, info = await loop.run_in_executor(
+                    None,
+                    partial(ytdlp_search_and_download_nocookie, user_query, out_dir)
+                )
 
-            # Step 5: Downloading (with 10% updates)
-            await safe_edit(progress_msg, _single_step_text(5, 6, "Downloading… 0%"), ParseMode.HTML, min_interval=1.0, last_edit_time_holder=last_edit_ref)
+                title = info.get("title", user_query)
 
-            try:
-                mp3_bytes = await download_with_progress(session, mp3_url, progress_msg, last_edit_ref)
-            except Exception as e:
-                await client.send_message(ADMIN, f"Download error: {e}")
-                await safe_edit(progress_msg, _single_step_text(5, 6, "❌ Download failed."), ParseMode.HTML, min_interval=1.0, last_edit_time_holder=last_edit_ref)
-                return
+                await safe_edit(progress_msg, _single_step_text(4, 6, "Preparing audio…"), ParseMode.HTML, min_interval=1.0, last_edit_time_holder=last_edit_ref)
 
-            # Step 6: Preparing audio
-            await safe_edit(progress_msg, _single_step_text(6, 6, "Preparing audio…"), ParseMode.HTML, min_interval=1.0, last_edit_time_holder=last_edit_ref)
+                # Read downloaded file
+                with open(filename, "rb") as f:
+                    file_bytes = f.read()
 
-            # write temp file and upload
-            try:
                 fd, temp_path = tempfile.mkstemp(suffix=".mp3")
                 os.close(fd)
+
                 with open(temp_path, "wb") as f:
-                    f.write(mp3_bytes)
+                    f.write(file_bytes)
 
-                # Completed -> Uploading
-                await safe_edit(progress_msg, "<b><u>Processing Request</u></b>\n\n• Completed.\n• Uploading audio…", ParseMode.HTML, min_interval=1.0, last_edit_time_holder=last_edit_ref)
+                await safe_edit(progress_msg, _single_step_text(5, 6, "Uploading…"), ParseMode.HTML, min_interval=1.0, last_edit_time_holder=last_edit_ref)
 
-                # chat action
-                try:
-                    await client.send_chat_action(message.chat.id, "upload_audio")
-                except Exception:
-                    pass
-
-                # send audio (open file pointer)
-                with open(temp_path, "rb") as audio_file:
+                with open(temp_path, "rb") as audio:
                     await client.send_audio(
-                        chat_id=message.chat.id,
-                        audio=audio_file,
-                        file_name=f"{user_query}.mp3",
-                        caption=f"🎵 {user_query}"
+                        message.chat.id,
+                        audio=audio,
+                        caption=f"🎵 {title}",
+                        file_name=f"{title}.mp3"
                     )
 
-                # delete progress message and temp file
-                try:
-                    await progress_msg.delete()
-                except Exception:
-                    pass
-                try:
-                    os.remove(temp_path)
-                except Exception:
-                    pass
-                return
+                await progress_msg.delete()
 
-            except Exception as e:
-                await client.send_message(ADMIN, f"MP3 send error: {e}")
-                await safe_edit(progress_msg, _single_step_text(6, 6, "❌ Error sending audio."), ParseMode.HTML, min_interval=1.0, last_edit_time_holder=last_edit_ref)
-                return
+            finally:
+                # cleanup files
+                try: os.remove(temp_path)
+                except: pass
+                try: os.remove(filename)
+                except: pass
+                try: os.rmdir(out_dir)
+                except: pass
+
 
     # We have Spotify results — continue normal flow
     await safe_edit(progress_msg, _single_step_text(2, 6, "Matching results…"), ParseMode.HTML, min_interval=1.0, last_edit_time_holder=last_edit_ref)
@@ -1215,7 +1211,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
