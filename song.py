@@ -333,19 +333,16 @@ async def song_command(client: Client, message: Message):
 
     await client.send_message(ADMIN, f"Found video_id = {video_id}")
 
-    # ------- Step 2: Search YouTube (RapidAPI) -------
-    await safe_edit(progress_msg, _single_step_text(2, 6, "Searching YouTube…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
+    # ---------- Step 2: Use the video_id we already found ----------
+    await safe_edit(progress_msg, _single_step_text(2, 6, "Video found. Preparing download…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
+
+    video_id = video_id  # keep same ID found earlier
+
+    await client.send_message(ADMIN, f"Using HTML-found video_id = {video_id}")
 
     async with aiohttp.ClientSession() as session:
-        video_id = await rapid_youtube_search(session, user_query)
 
-        if not video_id:
-            await safe_edit(progress_msg, _single_step_text(2, 6, "❌ Could not find video."), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
-            return
-
-        await client.send_message(ADMIN, f"RapidAPI YT video_id = {video_id}")
-
-        # ------- Step 3: Fetch MP3 link -------
+        # Step 3: Get MP3 link
         await safe_edit(progress_msg, _single_step_text(3, 6, "Getting MP3 link…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
 
         mp3_url = await get_mp3_url_rapidapi(session, video_id)
@@ -353,19 +350,19 @@ async def song_command(client: Client, message: Message):
             await safe_edit(progress_msg, _single_step_text(3, 6, "❌ MP3 link not found."), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
             return
 
-        await client.send_message(ADMIN, f"MP3 link OK")
+        await client.send_message(ADMIN, f"RapidAPI MP3 link OK")
 
-        # ------- Step 4: Download MP3 with progress -------
+        # Step 4: Download MP3
         await safe_edit(progress_msg, _single_step_text(4, 6, "Downloading… 0%"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
 
         try:
             mp3_bytes = await download_with_progress(session, mp3_url, progress_msg)
         except Exception as e:
-            await client.send_message(ADMIN, f"Download err: {e}")
+            await client.send_message(ADMIN, f"Download error: {e}")
             await safe_edit(progress_msg, _single_step_text(4, 6, "❌ Download failed."), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
             return
 
-        # ------- Step 5: Save temp file -------
+        # Step 5: Save to temp
         await safe_edit(progress_msg, _single_step_text(5, 6, "Preparing audio…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
 
         fd, temp_path = tempfile.mkstemp(suffix=".mp3")
@@ -373,7 +370,7 @@ async def song_command(client: Client, message: Message):
         with open(temp_path, "wb") as f:
             f.write(mp3_bytes)
 
-        # ------- Step 6: Upload -------
+        # Step 6: Upload
         await safe_edit(progress_msg, _single_step_text(6, 6, "Uploading…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
 
         try:
@@ -393,6 +390,7 @@ async def song_command(client: Client, message: Message):
 
         try: await progress_msg.delete()
         except: pass
+
 
 @handler_client.on_message(filters.command("play"))
 async def play_command(client: Client, message: Message):
