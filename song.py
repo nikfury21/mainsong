@@ -99,6 +99,28 @@ import tempfile
 import os
 from functools import partial
 
+
+async def rapid_youtube_search(session, query: str):
+    url = "https://youtube-search-results.p.rapidapi.com/youtube-search/"
+    headers = {
+        "x-rapidapi-key": RAPIDAPI_KEY,
+        "x-rapidapi-host": "youtube-search-results.p.rapidapi.com"
+    }
+    params = {"q": query}
+
+    async with session.get(url, headers=headers, params=params) as r:
+        if r.status != 200:
+            return None
+        data = await r.json()
+
+    videos = data.get("items", [])
+    for item in videos:
+        if item.get("type") == "video":
+            return item.get("id")  # videoId
+
+    return None
+
+
 async def html_youtube_first(query: str):
     import aiohttp, re
     url = f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}"
@@ -311,63 +333,66 @@ async def song_command(client: Client, message: Message):
 
     await client.send_message(ADMIN, f"Found video_id = {video_id}")
 
-    # ------- Step 2: Downloading with yt-dlp -------
-    await safe_edit(progress_msg, _single_step_text(2, 6, "Preparing download…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
+    # ------- Step 2: Search YouTube (RapidAPI) -------
+    await safe_edit(progress_msg, _single_step_text(2, 6, "Searching YouTube…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
 
-    out_dir = tempfile.mkdtemp(prefix="song_yt_")
+    async with aiohttp.ClientSession() as session:
+        video_id = await rapid_youtube_search(session, user_query)
 
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": False,
-        "format": "bestaudio/best",
-        "outtmpl": os.path.join(out_dir, "%(title)s.%(ext)s"),
-    }
+        if not video_id:
+            await safe_edit(progress_msg, _single_step_text(2, 6, "❌ Could not find video."), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
+            return
 
-    loop = asyncio.get_event_loop()
+        await client.send_message(ADMIN, f"RapidAPI YT video_id = {video_id}")
 
-    try:
-        info = await loop.run_in_executor(
-            None,
-            lambda: yt_dlp.YoutubeDL(ydl_opts).extract_info(
-                f"https://www.youtube.com/watch?v={video_id}", download=True
-            )
-        )
-        filename = os.path.join(out_dir, info["title"] + "." + info["ext"])
-    except Exception as e:
-        await client.send_message(ADMIN, f"yt-dlp error: {e}")
-        await safe_edit(progress_msg, _single_step_text(2, 6, f"❌ Download error."), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
-        return
+        # ------- Step 3: Fetch MP3 link -------
+        await safe_edit(progress_msg, _single_step_text(3, 6, "Getting MP3 link…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
 
-    title = info.get("title", "Audio")
+        mp3_url = await get_mp3_url_rapidapi(session, video_id)
+        if not mp3_url:
+            await safe_edit(progress_msg, _single_step_text(3, 6, "❌ MP3 link not found."), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
+            return
 
-    await safe_edit(progress_msg, _single_step_text(3, 6, "Processing audio…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
+        await client.send_message(ADMIN, f"MP3 link OK")
 
-    # ------- Step 3: Upload to Telegram -------
-    await safe_edit(progress_msg, _single_step_text(4, 6, "Uploading…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
+        # ------- Step 4: Download MP3 with progress -------
+        await safe_edit(progress_msg, _single_step_text(4, 6, "Downloading… 0%"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
 
-    try:
-        with open(filename, "rb") as audio:
-            await client.send_audio(
-                message.chat.id,
-                audio=audio,
-                caption=f"🎵 {title}",
-                file_name=f"{title}.mp3"
-            )
-        await progress_msg.delete()
-    except Exception as e:
-        await client.send_message(ADMIN, f"Upload Error: {e}")
-        await safe_edit(progress_msg, _single_step_text(4, 6, "❌ Upload failed."), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
+        try:
+            mp3_bytes = await download_with_progress(session, mp3_url, progress_msg)
+        except Exception as e:
+            await client.send_message(ADMIN, f"Download err: {e}")
+            await safe_edit(progress_msg, _single_step_text(4, 6, "❌ Download failed."), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
+            return
 
-    # ------- Cleanup -------
-    try:
-        os.remove(filename)
-    except:
-        pass
-    try:
-        os.rmdir(out_dir)
-    except:
-        pass
+        # ------- Step 5: Save temp file -------
+        await safe_edit(progress_msg, _single_step_text(5, 6, "Preparing audio…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
+
+        fd, temp_path = tempfile.mkstemp(suffix=".mp3")
+        os.close(fd)
+        with open(temp_path, "wb") as f:
+            f.write(mp3_bytes)
+
+        # ------- Step 6: Upload -------
+        await safe_edit(progress_msg, _single_step_text(6, 6, "Uploading…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
+
+        try:
+            with open(temp_path, "rb") as audio:
+                await client.send_audio(
+                    message.chat.id,
+                    audio=audio,
+                    caption=f"🎵 {user_query}",
+                    file_name=f"{user_query}.mp3"
+                )
+        except Exception as e:
+            await client.send_message(ADMIN, f"Upload error: {e}")
+            await safe_edit(progress_msg, _single_step_text(6, 6, "❌ Upload failed."), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
+        finally:
+            try: os.remove(temp_path)
+            except: pass
+
+        try: await progress_msg.delete()
+        except: pass
 
 @handler_client.on_message(filters.command("play"))
 async def play_command(client: Client, message: Message):
