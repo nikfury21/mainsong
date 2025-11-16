@@ -107,7 +107,8 @@ async def html_youtube_first(query: str):
             html = await r.text()
 
     # find first video-id
-    match = re.search(r"watch\\?v=([A-Za-z0-9_-]{11})", html)
+    match = re.search(r"watch\?v=([A-Za-z0-9_-]{11})", html)
+
     if match:
         return match.group(1)
     return None
