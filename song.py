@@ -122,7 +122,7 @@ def ytdlp_search_and_download_nocookie(query, out_dir):
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(f"ytsearch1:{query}", download=True)
+        info = ydl.extract_info(f"ytsearchdate1:{query}", download=True)
         entry = info["entries"][0] if "entries" in info else info
         filename = ydl.prepare_filename(entry)
         return filename, entry
