@@ -337,6 +337,8 @@ async def song_command(client: Client, message: Message):
     await safe_edit(progress_msg, _single_step_text(2, 6, "Video found. Preparing download…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
 
     video_id = video_id  # keep same ID found earlier
+    thumb_url = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+
 
     await client.send_message(ADMIN, f"Using HTML-found video_id = {video_id}")
 
@@ -378,9 +380,12 @@ async def song_command(client: Client, message: Message):
                 await client.send_audio(
                     message.chat.id,
                     audio=audio,
-                    caption=f"🎵 {user_query}",
-                    file_name=f"{user_query}.mp3"
+                    thumb=thumb_url,
+                    caption=f"🎵 <b>{user_query}</b>",
+                    file_name=f"{user_query}.mp3",
+                    parse_mode="HTML"
                 )
+
         except Exception as e:
             await client.send_message(ADMIN, f"Upload error: {e}")
             await safe_edit(progress_msg, _single_step_text(6, 6, "❌ Upload failed."), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
