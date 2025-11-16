@@ -324,7 +324,7 @@ async def song_command(client: Client, message: Message):
     await client.send_message(ADMIN, f"YT-Only Search: '{user_query}'")
 
     # ------- Step 1: Search YouTube (HTML) -------
-    await safe_edit(progress_msg, _single_step_text(1, 6, "Searching YouTube…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
+    await safe_edit(progress_msg, _single_step_text(1, 6, "Finding best match…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
 
     video_id = await html_youtube_first(user_query)
     if not video_id:
@@ -334,7 +334,7 @@ async def song_command(client: Client, message: Message):
     await client.send_message(ADMIN, f"Found video_id = {video_id}")
 
     # ---------- Step 2: Use the video_id we already found ----------
-    await safe_edit(progress_msg, _single_step_text(2, 6, "Video found. Preparing download…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
+    await safe_edit(progress_msg, _single_step_text(2, 6, "Preparing audio source…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
 
     video_id = video_id  # keep same ID found earlier
     thumb_url = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
@@ -345,7 +345,7 @@ async def song_command(client: Client, message: Message):
     async with aiohttp.ClientSession() as session:
 
         # Step 3: Get MP3 link
-        await safe_edit(progress_msg, _single_step_text(3, 6, "Getting MP3 link…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
+        await safe_edit(progress_msg, _single_step_text(3, 6, "Fetching audio file…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
 
         mp3_url = await get_mp3_url_rapidapi(session, video_id)
         if not mp3_url:
@@ -355,7 +355,7 @@ async def song_command(client: Client, message: Message):
         await client.send_message(ADMIN, f"RapidAPI MP3 link OK")
 
         # Step 4: Download MP3
-        await safe_edit(progress_msg, _single_step_text(4, 6, "Downloading… 0%"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
+        await safe_edit(progress_msg, _single_step_text(4, 6, "Retrieving data… 0%"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
 
         try:
             mp3_bytes = await download_with_progress(session, mp3_url, progress_msg)
@@ -365,7 +365,7 @@ async def song_command(client: Client, message: Message):
             return
 
         # Step 5: Save to temp
-        await safe_edit(progress_msg, _single_step_text(5, 6, "Preparing audio…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
+        await safe_edit(progress_msg, _single_step_text(5, 6, "Finalizing audio…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
 
         fd, temp_path = tempfile.mkstemp(suffix=".mp3")
         os.close(fd)
@@ -373,18 +373,49 @@ async def song_command(client: Client, message: Message):
             f.write(mp3_bytes)
 
         # Step 6: Upload
-        await safe_edit(progress_msg, _single_step_text(6, 6, "Uploading…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
+        await safe_edit(progress_msg, _single_step_text(6, 6, "Sending audio…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
 
         try:
+            # ----- Download thumbnail (local file required) -----
+            thumb_path = None
+            try:
+                async with session.get(thumb_url) as t:
+                    if t.status == 200:
+                        thumb_bytes = await t.read()
+                        fd2, thumb_path = tempfile.mkstemp(suffix=".jpg")
+                        os.close(fd2)
+                        with open(thumb_path, "wb") as f:
+                            f.write(thumb_bytes)
+            except:
+                thumb_path = None
+
+            # ----- Upload audio with or without thumbnail -----
             with open(temp_path, "rb") as audio:
-                await client.send_audio(
-                    message.chat.id,
-                    audio=audio,
-                    thumb=thumb_url,
-                    caption=f"🎵 <b>{user_query}</b>",
-                    file_name=f"{user_query}.mp3",
-                    parse_mode="HTML"
-                )
+                if thumb_path:
+                    await client.send_audio(
+                        message.chat.id,
+                        audio=audio,
+                        thumb=thumb_path,
+                        caption=f"🎵 <b>{user_query}</b>",
+                        file_name=f"{user_query}.mp3",
+                        parse_mode="HTML"
+                    )
+                else:
+                    await client.send_audio(
+                        message.chat.id,
+                        audio=audio,
+                        caption=f"🎵 <b>{user_query}</b>",
+                        file_name=f"{user_query}.mp3",
+                        parse_mode="HTML"
+                    )
+
+            # cleanup thumbnail
+            try:
+                if thumb_path:
+                    os.remove(thumb_path)
+            except:
+                pass
+
 
         except Exception as e:
             await client.send_message(ADMIN, f"Upload error: {e}")
