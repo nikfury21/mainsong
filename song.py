@@ -166,26 +166,28 @@ def iso8601_to_seconds(iso: str) -> int:
         return h * 3600 + m_ * 60 + s
     except Exception:
         return 0
+
+
 async def download_with_progress(session, url, progress_msg):
     async with session.get(url) as resp:
         total = int(resp.headers.get("Content-Length", 0))
         downloaded = 0
         chunks = []
-        last_update = 0
+        last_edit = time.time()
 
-        async for chunk in resp.content.iter_chunked(1024 * 64):
+        async for chunk in resp.content.iter_chunked(1024 * 128):
             downloaded += len(chunk)
             chunks.append(chunk)
 
             percent = int((downloaded / total) * 100) if total else 0
 
-            # update every +5%
-            if percent - last_update >= 5:
-                last_update = percent
+            # update only every 1.5 seconds
+            if time.time() - last_edit > 1.5:
+                last_edit = time.time()
                 try:
                     await progress_msg.edit_text(
-                        f"<b><u>Downloading… {percent}%</u></b>",
-                        parse_mode="HTML"
+                        f"<b><u>Retrieving data… {percent}%</u></b>",
+                        parse_mode=ParseMode.HTML
                     )
                 except:
                     pass
@@ -391,23 +393,16 @@ async def song_command(client: Client, message: Message):
 
             # ----- Upload audio with or without thumbnail -----
             with open(temp_path, "rb") as audio:
-                if thumb_path:
-                    await client.send_audio(
-                        message.chat.id,
-                        audio=audio,
-                        thumb=thumb_path,
-                        caption=f"🎵 <b>{user_query}</b>",
-                        file_name=f"{user_query}.mp3",
-                        parse_mode="HTML"
-                    )
-                else:
-                    await client.send_audio(
-                        message.chat.id,
-                        audio=audio,
-                        caption=f"🎵 <b>{user_query}</b>",
-                        file_name=f"{user_query}.mp3",
-                        parse_mode="HTML"
-                    )
+                await client.send_audio(
+                    chat_id=message.chat.id,
+                    audio=audio,
+                    thumb=thumb_path if thumb_path else None,
+                    caption=f"🎵 {user_query}",
+                    file_name=f"{user_query}.mp3"
+                )
+
+
+                
 
             # cleanup thumbnail
             try:
