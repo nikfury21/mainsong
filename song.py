@@ -112,6 +112,20 @@ import tempfile
 import os
 from functools import partial
 
+async def html_youtube_first(query: str):
+    import aiohttp, re
+    url = f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}"
+    async with aiohttp.ClientSession() as s:
+        async with s.get(url) as r:
+            html = await r.text()
+
+    # find first video-id
+    match = re.search(r"watch\\?v=([A-Za-z0-9_-]{11})", html)
+    if match:
+        return match.group(1)
+    return None
+
+
 def ytdlp_search_and_download_nocookie(query, out_dir):
     ydl_opts = {
         "quiet": True,
@@ -400,10 +414,24 @@ async def song_command(client: Client, message: Message):
             out_dir = tempfile.mkdtemp(prefix="song_yt_")
 
             try:
-                filename, info = await loop.run_in_executor(
-                    None,
-                    partial(ytdlp_search_and_download_nocookie, user_query, out_dir)
-                )
+                video_id = await html_youtube_first(user_query)
+
+                if not video_id:
+                    await safe_edit(progress_msg, _single_step_text(3, 6, "❌ Could not find the video."), ParseMode.HTML, min_interval=1.0, last_edit_time_holder=last_edit_ref)
+                    return
+
+                ydl_opts = {
+                    "quiet": True,
+                    "no_warnings": True,
+                    "skip_download": False,
+                    "format": "bestaudio/best",
+                    "outtmpl": os.path.join(out_dir, "%(title)s.%(ext)s"),
+                }
+
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
+                    filename = ydl.prepare_filename(info)
+
 
                 title = info.get("title", user_query)
 
@@ -464,7 +492,8 @@ async def song_command(client: Client, message: Message):
         await safe_edit(progress_msg, _single_step_text(3, 6, "Obtaining file link…"), ParseMode.HTML, min_interval=1.0, last_edit_time_holder=last_edit_ref)
 
         try:
-            video_id = await search_youtube_video_id(session, combined_query)
+            video_id = await html_youtube_first(combined_query)
+
         except Exception as e:
             await client.send_message(ADMIN, f"YouTube search failed: {e}")
             await safe_edit(progress_msg, _single_step_text(3, 6, "❌ Could not obtain file link."), ParseMode.HTML, min_interval=1.0, last_edit_time_holder=last_edit_ref)
