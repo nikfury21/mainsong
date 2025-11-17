@@ -61,14 +61,22 @@ call_py = PyTgCalls(userbot)
 
 
 
-music_queue = {}  # chat_id -> list of dicts for queued songs
 
-def add_to_queue(chat_id, song_data):
-    """Add song_data dict to queue for chat_id"""
+# ======================================
+# CORRECT QUEUE MODEL
+# ======================================
+current_song = {}      # chat_id -> dict (NOW PLAYING)
+music_queue = {}       # chat_id -> list of next songs
+
+
+def add_to_queue(chat_id, song):
+    """Add next song after current one."""
     if chat_id not in music_queue:
         music_queue[chat_id] = []
-    music_queue[chat_id].append(song_data)
-    return len(music_queue[chat_id])
+    music_queue[chat_id].append(song)
+    return len(music_queue[chat_id])   # return queue position (1-based)
+
+
 
 # -------------------------
 # Flask app (keep alive for Render)
@@ -500,15 +508,14 @@ async def play_command(client: Client, message: Message):
     except Exception:
         active_chats = []
 
-    if chat_id in active_chats:
-        song_data = {
+    if chat_id in current_song:
+        pos = add_to_queue(chat_id, {
             "title": video_title,
             "url": mp3,
             "vid": vid,
             "user": message.from_user,
-            "duration": duration_seconds or 180,
-        }
-        pos = add_to_queue(chat_id, song_data)
+            "duration": duration_seconds or 180
+        })
 
         await message.reply_text(
             f"<b>➜ Added to queue at</b> <u>#{pos}</u>\n\n"
@@ -519,21 +526,22 @@ async def play_command(client: Client, message: Message):
         )
         return
 
+
     # ─────────────────────────────────────────
     # ▶ PLAY NOW IN VC
     # ─────────────────────────────────────────
     try:
         await call_py.play(chat_id, MediaStream(mp3, video_flags=MediaStream.Flags.IGNORE))
 
-        # store as currently playing
-        music_queue[chat_id] = [{
+        current_song[chat_id] = {
             "title": video_title,
             "url": mp3,
             "vid": vid,
             "user": message.from_user,
             "duration": duration_seconds or 180,
             "start_time": time.time()
-        }]
+        }
+
 
         caption = (
             "<blockquote>"
@@ -573,61 +581,53 @@ async def play_command(client: Client, message: Message):
 
 
 
-async def handle_next_in_queue(chat_id: int):
-    if chat_id in music_queue and music_queue[chat_id]:
-        next_song = music_queue[chat_id].pop(0)
+async def handle_next(chat_id):
+    # no songs in queue
+    if chat_id not in music_queue or not music_queue[chat_id]:
+        current_song.pop(chat_id, None)
+        music_queue.pop(chat_id, None)
+
         try:
-            # ✅ Instead of leaving VC, just change the stream
-            if hasattr(call_py, "change_stream"):
-                await call_py.change_stream(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
-                # Mark this new song as current for /seek tracking
-                music_queue[chat_id] = [next_song]
-                next_song["start_time"] = time.time()
-
-            elif hasattr(call_py, "play"):
-                # fallback for older PyTgCalls builds
-                await call_py.play(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
-            else:
-                raise Exception("No compatible stream change method found.")
-
-            caption = (
-                "<blockquote>"
-                "<b>🎧 <u>hulalala Streaming (Auto Next)</u></b>\n\n"
-                f"<b>❍ Title:</b> <i>{next_song['title']}</i>\n"
-                f"<b>❍ Requested by:</b> "
-                f"<a href='tg://user?id={next_song['user'].id}'>"
-                f"<u>{next_song['user'].first_name}</u></a>"
-                "</blockquote>"
-            )
-
-            bar = get_progress_bar(0, next_song["duration"])
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
-                 InlineKeyboardButton("▶ Resume", callback_data="resume"),
-                 InlineKeyboardButton("⏭ Skip", callback_data="skip")],
-                [InlineKeyboardButton(bar, callback_data="progress")]
-            ])
-            thumb = f"https://img.youtube.com/vi/{next_song['vid']}/hqdefault.jpg"
-            msg = await bot.send_photo(chat_id, thumb, caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
-
-            # Start progress updater + auto next
-            asyncio.create_task(update_progress_message(chat_id, msg, time.time(), next_song["duration"], caption))
-            asyncio.create_task(auto_next_timer(chat_id, next_song["duration"] or 180))
-
-        except Exception as e:
-            await bot.send_message(chat_id, f"⚠️ Could not auto-play next queued song:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
-    else:
-        # 🧹 Leave VC only when queue is empty
-        if chat_id in music_queue:
-            music_queue.pop(chat_id, None)
-        try:
-            if hasattr(call_py, "leave_call"):
-                await call_py.leave_call(chat_id)
-            elif hasattr(call_py, "stop"):
-                await call_py.stop(chat_id)
-        except Exception:
+            await call_py.leave_call(chat_id)
+        except:
             pass
-        await bot.send_message(chat_id, "✅ <b>Queue finished and cleared.</b>", parse_mode=ParseMode.HTML)
+
+        await bot.send_message(chat_id, "✅ Queue finished and cleared.", parse_mode=ParseMode.HTML)
+        return
+
+    # get next song
+    next_song = music_queue[chat_id].pop(0)
+    current_song[chat_id] = next_song
+    next_song["start_time"] = time.time()
+
+    try:
+        # switch stream
+        if hasattr(call_py, "change_stream"):
+            await call_py.change_stream(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
+        else:
+            await call_py.play(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
+
+        thumb = f"https://img.youtube.com/vi/{next_song['vid']}/hqdefault.jpg"
+        caption = (
+            "<blockquote>"
+            "<b>🎧 <u>Now Playing</u></b>\n\n"
+            f"<b>❍ Title:</b> <i>{next_song['title']}</i>\n"
+            f"<b>❍ Requested by:</b> "
+            f"<a href='tg://user?id={next_song['user'].id}'><u>{next_song['user'].first_name}</u></a>"
+            "</blockquote>"
+        )
+
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
+             InlineKeyboardButton("▶ Resume", callback_data="resume"),
+             InlineKeyboardButton("⏭ Skip", callback_data="skip")]
+        ])
+
+        msg = await bot.send_photo(chat_id, thumb, caption=caption, reply_markup=kb)
+        asyncio.create_task(auto_next_timer(chat_id, next_song["duration"]))
+
+    except Exception as e:
+        await bot.send_message(chat_id, f"⚠️ Could not auto-play next queued song:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
 
 
 
@@ -635,7 +635,8 @@ async def handle_next_in_queue(chat_id: int):
 async def auto_next_timer(chat_id: int, duration: int):
     """Fallback timer to trigger next song after duration."""
     await asyncio.sleep(duration)
-    await handle_next_in_queue(chat_id)
+    await handle_next(chat_id)
+
 
 # When playing a song, we’ll start this timer
 # Modify handle_next_in_queue to start a timer too
@@ -688,7 +689,8 @@ async def skip_command(client, message: Message):
         await message.reply_text("⏭ <b>Skipped current song.</b>", parse_mode=ParseMode.HTML)
 
         # ✅ Immediately play the next song in queue
-        await handle_next_in_queue(chat_id)
+        await handle_next(chat_id)
+
 
     except Exception as e:
         await message.reply_text(
