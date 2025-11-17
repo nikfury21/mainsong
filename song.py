@@ -44,7 +44,7 @@ RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 TARGET_GROUP_ID = os.getenv("TARGET_GROUP_ID", None)  # optional group id to forward results to
-MODS = [8353079084]  # your Telegram ID(s)
+MODS = [8353079084, 8355303766]  # your Telegram ID(s)
 
 if not (API_ID and API_HASH and USERBOT_SESSION):
     raise RuntimeError("Please set API_ID, API_HASH and USERBOT_SESSION environment variables.")
@@ -429,7 +429,7 @@ async def song_command(client: Client, message: Message):
 
 @handler_client.on_message(filters.command("play"))
 async def play_command(client: Client, message: Message):
-    """/play <query> - find audio and play in voice chat using userbot + PyTgCalls"""
+    """/play <query> - SAME SEARCH RESULT AS /song"""
     query = " ".join(message.command[1:]).strip()
     if not query:
         await message.reply_text("Please provide a song name after /play.")
@@ -441,47 +441,57 @@ async def play_command(client: Client, message: Message):
     except Exception:
         pass
 
-
-
+    # ─────────────────────────────────────────
+    # 🔍 STEP 1 — HTML YouTube Search (Same as /song)
+    # ─────────────────────────────────────────
     async with aiohttp.ClientSession() as session:
-        vid = await search_youtube_video_id(session, query)
 
-        video_title = query      # fallback title
-        duration_seconds = 0     # fallback duration
-
-        if vid:
-            try:
-                yt_api_url = (
-                    f"https://www.googleapis.com/youtube/v3/videos"
-                    f"?part=snippet,contentDetails&id={vid}&key={YOUTUBE_API_KEY}"
-                )
-                async with session.get(yt_api_url) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        items = data.get("items")
-                        if items:
-                            snippet = items[0].get("snippet", {})
-                            content = items[0].get("contentDetails", {})
-                            video_title = snippet.get("title", query)
-                            iso_dur = content.get("duration")
-                            duration_seconds = iso8601_to_seconds(iso_dur)
-            except Exception:
-                pass
-
-        readable_duration = format_time(duration_seconds or 0)
-
-
+        vid = await html_youtube_first(query)
         if not vid:
-            await message.reply_text("❌ Could not find on YouTube.")
+            await message.reply_text("❌ No matching YouTube results.")
             return
+
+        # Thumbnail
+        thumb_url = f"https://img.youtube.com/vi/{vid}/hqdefault.jpg"
+
+        # ─────────────────────────────────────────
+        # 🎧 STEP 2 — Fetch MP3 (Same as /song)
+        # ─────────────────────────────────────────
         mp3 = await get_mp3_url_rapidapi(session, vid)
         if not mp3:
             await message.reply_text("❌ Could not fetch audio link.")
             return
 
+        # ─────────────────────────────────────────
+        # 🏷️ STEP 3 — Fetch Title + Duration (Optional)
+        # ─────────────────────────────────────────
+        video_title = query
+        duration_seconds = 0
+
+        try:
+            yt_api_url = (
+                f"https://www.googleapis.com/youtube/v3/videos"
+                f"?part=snippet,contentDetails&id={vid}&key={YOUTUBE_API_KEY}"
+            )
+            async with session.get(yt_api_url) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    items = data.get("items")
+                    if items:
+                        snippet = items[0].get("snippet", {})
+                        content = items[0].get("contentDetails", {})
+                        video_title = snippet.get("title", query)
+                        iso_dur = content.get("duration")
+                        duration_seconds = iso8601_to_seconds(iso_dur)
+        except:
+            pass
+
+    readable_duration = format_time(duration_seconds or 0)
     chat_id = message.chat.id
 
-    # --- Check if a song is already playing ---
+    # ─────────────────────────────────────────
+    # 🎵 CHECK IF SOMETHING IS ALREADY PLAYING (QUEUE)
+    # ─────────────────────────────────────────
     try:
         active_calls_dict = call_py.calls
         if asyncio.iscoroutine(active_calls_dict):
@@ -490,7 +500,6 @@ async def play_command(client: Client, message: Message):
     except Exception:
         active_chats = []
 
-
     if chat_id in active_chats:
         song_data = {
             "title": video_title,
@@ -498,63 +507,51 @@ async def play_command(client: Client, message: Message):
             "vid": vid,
             "user": message.from_user,
             "duration": duration_seconds or 180,
-
         }
-        position = add_to_queue(chat_id, song_data)
+        pos = add_to_queue(chat_id, song_data)
 
         await message.reply_text(
-            f"<b>➜ Added to queue at</b> <u>#{position}</u>\n\n"
+            f"<b>➜ Added to queue at</b> <u>#{pos}</u>\n\n"
             f"<b>‣ Title:</b> <i>{video_title}</i>\n"
             f"<b>‣ Duration:</b> <u>{readable_duration}</u>\n"
-
             f"<b>‣ Requested by:</b> <a href='tg://user?id={message.from_user.id}'>{message.from_user.first_name}</a>",
             parse_mode=ParseMode.HTML,
         )
         return
 
-
+    # ─────────────────────────────────────────
+    # ▶ PLAY NOW IN VC
+    # ─────────────────────────────────────────
     try:
-        # call_py.play expects (chat_id, MediaStream(...))
-        log.info("Attempting to play in chat %s stream=%s", chat_id, mp3)
-        try:
-            await call_py.play(chat_id, MediaStream(mp3, video_flags=MediaStream.Flags.IGNORE))
-            # Store current song info so /seek and /seekback can work
-            music_queue[chat_id] = [{
-                "title": video_title,
-                "url": mp3,
-                "vid": vid,
-                "user": message.from_user,
-                "duration": duration_seconds or 180,
-                "start_time": time.time()
-            }]
+        await call_py.play(chat_id, MediaStream(mp3, video_flags=MediaStream.Flags.IGNORE))
 
-        except Exception as e:
-            if "FLOOD_WAIT" in str(e):
-                await message.reply_text("🚫 Telegram asked to wait a bit before joining the voice chat. Try again in a minute.")
-            elif "INTERDC_X_CALL_RICH_ERROR" in str(e):
-                await message.reply_text("⚠️ Telegram servers are having trouble connecting the voice call. Please try again later.")
-            else:
-                await message.reply_text(f"❌ Voice playback error:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
-            return
+        # store as currently playing
+        music_queue[chat_id] = [{
+            "title": video_title,
+            "url": mp3,
+            "vid": vid,
+            "user": message.from_user,
+            "duration": duration_seconds or 180,
+            "start_time": time.time()
+        }]
 
         caption = (
             "<blockquote>"
             "<b>🎧 <u>hulalala Streaming (Local Playback)</u></b>\n\n"
             f"<b>❍ Title:</b> <i>{video_title}</i>\n"
-            f"<b>❍ Requested by:</b> <a href='tg://user?id={message.from_user.id}'><u>{message.from_user.first_name}</u></a>"
+            f"<b>❍ Requested by:</b> "
+            f"<a href='tg://user?id={message.from_user.id}'><u>{message.from_user.first_name}</u></a>"
             "</blockquote>"
         )
 
-        bar = get_progress_bar(0, duration_seconds or 180)  # rough placeholder, 3 min default
+        bar = get_progress_bar(0, duration_seconds or 180)
+
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
-            InlineKeyboardButton("▶ Resume", callback_data="resume"),
-            InlineKeyboardButton("⏭ Skip", callback_data="skip")],
+             InlineKeyboardButton("▶ Resume", callback_data="resume"),
+             InlineKeyboardButton("⏭ Skip", callback_data="skip")],
             [InlineKeyboardButton(bar, callback_data="progress")]
         ])
-
-        # Build YouTube thumbnail from video id
-        thumb_url = f"https://img.youtube.com/vi/{vid}/hqdefault.jpg"
 
         msg = await message.reply_photo(
             photo=thumb_url,
@@ -563,16 +560,12 @@ async def play_command(client: Client, message: Message):
             parse_mode=ParseMode.HTML
         )
 
-
-        # kick off progress updater
-        asyncio.create_task(update_progress_message(message.chat.id, msg, time.time(), duration_seconds or 180, caption))
-        # start fallback auto-next timer
+        # Start progress ui
+        asyncio.create_task(update_progress_message(chat_id, msg, time.time(), duration_seconds or 180, caption))
         asyncio.create_task(auto_next_timer(chat_id, duration_seconds or 180))
 
-
     except Exception as e:
-        log.exception("Failed to join voice chat / play: %s", e)
-        await message.reply_text(f"❌ Voice playback error: {e}")
+        await message.reply_text(f"❌ Voice playback error:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
 
 
 
