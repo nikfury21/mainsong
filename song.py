@@ -44,6 +44,7 @@ RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 TARGET_GROUP_ID = os.getenv("TARGET_GROUP_ID", None)  # optional group id to forward results to
+MODS = [8353079084]  # your Telegram ID(s)
 
 if not (API_ID and API_HASH and USERBOT_SESSION):
     raise RuntimeError("Please set API_ID, API_HASH and USERBOT_SESSION environment variables.")
@@ -280,6 +281,9 @@ async def get_mp3_url_rapidapi(session: aiohttp.ClientSession, video_id: str):
 # -------------------------
 @userbot.on_message(filters.command("ping"))
 async def ping_userbot(_, message: Message):
+    user_id = message.from_user.id
+    if user_id not in MODS:
+        return
     # a simple check on userbot to ensure user account is running
     await message.reply_text("userbot is online ✅")
 
@@ -723,7 +727,6 @@ async def clear_queue(client, message: Message):
 # ==============================
 from datetime import datetime
 
-MODS = [8353079084]  # your Telegram ID(s)
 BOT_START_TIME = time.time()
 
 
