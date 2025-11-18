@@ -446,7 +446,7 @@ async def videodebug(client, message):
 
     await client.send_message(ADMIN, f"🔍 videodebug query = {query}")
 
-    # Step 1 — get video ID using your existing html search
+    # Step 1 — Search same as /song
     video_id = await html_youtube_first(query)
     await client.send_message(ADMIN, f"Found video_id = {video_id}")
 
@@ -454,7 +454,7 @@ async def videodebug(client, message):
         await client.send_message(ADMIN, "❌ No video ID found.")
         return await message.reply("No result.")
 
-    # Step 2 — call RapidAPI
+    # Step 2 — RapidAPI call
     url = "https://ytstream-download-youtube-videos.p.rapidapi.com/dl"
     headers = {
         "X-RapidAPI-Key": RAPIDAPI_KEY,
@@ -471,14 +471,22 @@ async def videodebug(client, message):
             except:
                 data = {"error": "Failed to parse JSON"}
 
-    # Step 3 — send FULL JSON to your DM
-    await client.send_message(
-        ADMIN, 
-        f"📦 API JSON Response:\n<code>{data}</code>",
-        parse_mode="HTML"
-    )
+    # Step 3 — send JSON to your DM (without HTML escaping)
+    try:
+        await client.send_message(
+            ADMIN,
+            f"📦 API JSON Response:\n{data}",   # no HTML tags
+            parse_mode=None                  # <- IMPORTANT
+        )
+    except:
+        # fallback if message too long
+        await client.send_message(ADMIN, "JSON too long, sending as file…")
 
-    # Notify group user
+        with open("debug.json", "w") as f:
+            f.write(str(data))
+
+        await client.send_document(ADMIN, "debug.json")
+    
     await message.reply("Debug sent to your DM.")
 
 @handler_client.on_message(filters.command("video"))
