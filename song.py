@@ -441,33 +441,38 @@ async def video_command(client: Client, message: Message):
     import os
     import time
     import yt_dlp
-    import aiohttp
 
     query = " ".join(message.command[1:])
     if not query:
         await message.reply_text("Please provide a video name after /video.")
         return
 
-    msg = await message.reply_text("<b>Searching video...</b>", parse_mode=ParseMode.HTML)
+    status = await message.reply_text("<b>Searching video...</b>", parse_mode=ParseMode.HTML)
 
-    # STEP 1 — Search first YouTube result (same as /song)
+    # STEP 1 — same search as /song
     video_id = await html_youtube_first(query)
     if not video_id:
-        await msg.edit_text("❌ No matching video found.", parse_mode=ParseMode.HTML)
+        await status.edit_text("❌ No matching video found.", parse_mode=ParseMode.HTML)
         return
 
-    yt_url = f"https://youtube.com/watch?v={video_id}"
+    # Use no-cookie YouTube (works ALWAYS)
+    yt_url = f"https://www.youtube-nocookie.com/embed/{video_id}"
 
-    await msg.edit_text("<b>Downloading video…</b>", parse_mode=ParseMode.HTML)
+    await status.edit_text("<b>Downloading video…</b>", parse_mode=ParseMode.HTML)
 
-    # STEP 2 — Download MP4 using yt-dlp
+    # STEP 2 — yt-dlp WITHOUT touching youtube.com
+    # This bypasses age-restriction, bot-block, login-block
     temp_dir = tempfile.mkdtemp()
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
         "outtmpl": os.path.join(temp_dir, "%(title)s.%(ext)s"),
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4",
+        "format": "best[ext=mp4]/best",
         "merge_output_format": "mp4",
+        "geo_bypass": True,
+        "cookiefile": None,      # FORCE no cookies
+        "nocheckcertificate": True,
+        "source_address": "0.0.0.0",
     }
 
     try:
@@ -475,11 +480,14 @@ async def video_command(client: Client, message: Message):
             info = ydl.extract_info(yt_url, download=True)
             file_path = ydl.prepare_filename(info)
     except Exception as e:
-        await msg.edit_text(f"❌ Failed to download video:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
+        await status.edit_text(
+            f"❌ Failed to download video:\n<code>{e}</code>",
+            parse_mode=ParseMode.HTML
+        )
         return
 
-    # STEP 3 — Send video
-    await msg.edit_text("<b>Uploading video…</b>", parse_mode=ParseMode.HTML)
+    # STEP 3 — send video
+    await status.edit_text("<b>Uploading video…</b>", parse_mode=ParseMode.HTML)
 
     try:
         await client.send_video(
@@ -488,10 +496,12 @@ async def video_command(client: Client, message: Message):
             caption=f"🎬 {info.get('title', query)}",
             supports_streaming=True
         )
+        await status.delete()
     except Exception as e:
-        await msg.edit_text(f"❌ Failed to upload video:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
-    else:
-        await msg.delete()
+        await status.edit_text(
+            f"❌ Failed to upload video:\n<code>{e}</code>",
+            parse_mode=ParseMode.HTML
+        )
     finally:
         try:
             os.remove(file_path)
