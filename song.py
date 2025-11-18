@@ -434,6 +434,52 @@ async def song_command(client: Client, message: Message):
         try: await progress_msg.delete()
         except: pass
 
+@handler_client.on_message(filters.command("videodebug"))
+async def videodebug(client, message):
+    import aiohttp
+
+    ADMIN = 8353079084   # your Telegram ID
+
+    query = " ".join(message.command[1:])
+    if not query:
+        return await message.reply("Usage: /videodebug <query>")
+
+    await client.send_message(ADMIN, f"🔍 videodebug query = {query}")
+
+    # Step 1 — get video ID using your existing html search
+    video_id = await html_youtube_first(query)
+    await client.send_message(ADMIN, f"Found video_id = {video_id}")
+
+    if not video_id:
+        await client.send_message(ADMIN, "❌ No video ID found.")
+        return await message.reply("No result.")
+
+    # Step 2 — call RapidAPI
+    url = "https://ytstream-download-youtube-videos.p.rapidapi.com/dl"
+    headers = {
+        "X-RapidAPI-Key": RAPIDAPI_KEY,
+        "X-RapidAPI-Host": "ytstream-download-youtube-videos.p.rapidapi.com",
+    }
+    params = {"id": video_id}
+
+    await client.send_message(ADMIN, "📡 Fetching API response…")
+
+    async with aiohttp.ClientSession() as s:
+        async with s.get(url, headers=headers, params=params) as r:
+            try:
+                data = await r.json()
+            except:
+                data = {"error": "Failed to parse JSON"}
+
+    # Step 3 — send FULL JSON to your DM
+    await client.send_message(
+        ADMIN, 
+        f"📦 API JSON Response:\n<code>{data}</code>",
+        parse_mode="HTML"
+    )
+
+    # Notify group user
+    await message.reply("Debug sent to your DM.")
 
 @handler_client.on_message(filters.command("video"))
 async def video_command(client: Client, message: Message):
