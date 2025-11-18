@@ -435,6 +435,71 @@ async def song_command(client: Client, message: Message):
         except: pass
 
 
+@handler_client.on_message(filters.command("video"))
+async def video_command(client: Client, message: Message):
+    import tempfile
+    import os
+    import time
+    import yt_dlp
+    import aiohttp
+
+    query = " ".join(message.command[1:])
+    if not query:
+        await message.reply_text("Please provide a video name after /video.")
+        return
+
+    msg = await message.reply_text("<b>Searching video...</b>", parse_mode=ParseMode.HTML)
+
+    # STEP 1 — Search first YouTube result (same as /song)
+    video_id = await html_youtube_first(query)
+    if not video_id:
+        await msg.edit_text("❌ No matching video found.", parse_mode=ParseMode.HTML)
+        return
+
+    yt_url = f"https://youtube.com/watch?v={video_id}"
+
+    await msg.edit_text("<b>Downloading video…</b>", parse_mode=ParseMode.HTML)
+
+    # STEP 2 — Download MP4 using yt-dlp
+    temp_dir = tempfile.mkdtemp()
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "outtmpl": os.path.join(temp_dir, "%(title)s.%(ext)s"),
+        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4",
+        "merge_output_format": "mp4",
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(yt_url, download=True)
+            file_path = ydl.prepare_filename(info)
+    except Exception as e:
+        await msg.edit_text(f"❌ Failed to download video:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
+        return
+
+    # STEP 3 — Send video
+    await msg.edit_text("<b>Uploading video…</b>", parse_mode=ParseMode.HTML)
+
+    try:
+        await client.send_video(
+            chat_id=message.chat.id,
+            video=open(file_path, "rb"),
+            caption=f"🎬 {info.get('title', query)}",
+            supports_streaming=True
+        )
+    except Exception as e:
+        await msg.edit_text(f"❌ Failed to upload video:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
+    else:
+        await msg.delete()
+    finally:
+        try:
+            os.remove(file_path)
+            os.rmdir(temp_dir)
+        except:
+            pass
+
+
 @handler_client.on_message(filters.command("play"))
 async def play_command(client: Client, message: Message):
     """/play <query> - SAME SEARCH RESULT AS /song"""
