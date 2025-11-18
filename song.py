@@ -437,10 +437,9 @@ async def song_command(client: Client, message: Message):
 
 @handler_client.on_message(filters.command("video"))
 async def video_command(client: Client, message: Message):
-    import aiohttp
     import tempfile
+    import yt_dlp
     import os
-    import time
 
     query = " ".join(message.command[1:])
     if not query:
@@ -449,67 +448,58 @@ async def video_command(client: Client, message: Message):
 
     status = await message.reply_text("<b>Searching video…</b>", parse_mode=ParseMode.HTML)
 
-    # STEP 1 — same search as /song
+    # STEP 1 — same search as your /song command
     video_id = await html_youtube_first(query)
     if not video_id:
-        await status.edit_text("❌ No matching results.", parse_mode=ParseMode.HTML)
+        await status.edit_text("❌ No results found.", parse_mode=ParseMode.HTML)
         return
 
-    await status.edit_text("<b>Fetching video info…</b>", parse_mode=ParseMode.HTML)
+    # Use Invidious (works always, no cookies)
+    inv_url = f"https://yewtu.be/watch?v={video_id}"
 
-    # STEP 2 — RAPIDAPI: get MP4 download link
-    url = "https://youtube-mp4.p.rapidapi.com/dl"
-    headers = {
-        "X-RapidAPI-Key": RAPIDAPI_KEY,
-        "X-RapidAPI-Host": "youtube-mp4.p.rapidapi.com"
+    await status.edit_text("<b>Downloading video…</b>", parse_mode=ParseMode.HTML)
+
+    # STEP 2 — yt-dlp but NOT on youtube.com (no block)
+    temp_dir = tempfile.mkdtemp()
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "format": "best[ext=mp4]/best",
+        "outtmpl": os.path.join(temp_dir, "%(title)s.%(ext)s"),
+        "merge_output_format": "mp4",
     }
-    params = {"id": video_id}
 
-    async with aiohttp.ClientSession() as session:
-        for _ in range(6):  # retry like /song
-            try:
-                async with session.get(url, headers=headers, params=params) as r:
-                    data = await r.json()
-            except:
-                data = {}
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(inv_url, download=True)
+            file_path = ydl.prepare_filename(info)
+    except Exception as e:
+        await status.edit_text(
+            f"❌ Failed (mirror unavailable):\n<code>{e}</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
 
-            if data.get("status") == "ok" and data.get("link"):
-                mp4_url = data["link"]
-                break
-
-            await asyncio.sleep(3)
-        else:
-            await status.edit_text("❌ Could not fetch MP4 link.", parse_mode=ParseMode.HTML)
-            return
-
-        await status.edit_text("<b>Downloading video…</b>", parse_mode=ParseMode.HTML)
-
-        # STEP 3 — download MP4
-        async with session.get(mp4_url) as resp:
-            content = await resp.read()
-
-        fd, temp_path = tempfile.mkstemp(suffix=".mp4")
-        os.close(fd)
-
-        with open(temp_path, "wb") as f:
-            f.write(content)
-
-    # STEP 4 — upload
+    # STEP 3 — upload video
     await status.edit_text("<b>Uploading video…</b>", parse_mode=ParseMode.HTML)
 
     try:
         await client.send_video(
-            chat_id=message.chat.id,
-            video=open(temp_path, "rb"),
-            caption=f"🎬 {query}",
-            supports_streaming=True
+            message.chat.id,
+            open(file_path, "rb"),
+            caption=f"🎬 {info.get('title', query)}",
+            supports_streaming=True,
         )
         await status.delete()
     except Exception as e:
         await status.edit_text(f"❌ Upload failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
     finally:
-        try: os.remove(temp_path)
-        except: pass
+        try:
+            os.remove(file_path)
+            os.rmdir(temp_dir)
+        except:
+            pass
+
 
 @handler_client.on_message(filters.command("play"))
 async def play_command(client: Client, message: Message):
