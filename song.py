@@ -437,8 +437,8 @@ async def song_command(client: Client, message: Message):
 
 @handler_client.on_message(filters.command("video"))
 async def video_command(client: Client, message: Message):
+    import aiohttp
     import tempfile
-    import yt_dlp
     import os
 
     query = " ".join(message.command[1:])
@@ -448,57 +448,72 @@ async def video_command(client: Client, message: Message):
 
     status = await message.reply_text("<b>Searching video…</b>", parse_mode=ParseMode.HTML)
 
-    # STEP 1 — same search as your /song command
+    # ✔ Step 1 — same YouTube search used by /song
     video_id = await html_youtube_first(query)
     if not video_id:
-        await status.edit_text("❌ No results found.", parse_mode=ParseMode.HTML)
+        await status.edit_text("❌ No matching video found.", parse_mode=ParseMode.HTML)
         return
 
-    # Use Invidious (works always, no cookies)
-    inv_url = f"https://yewtu.be/watch?v={video_id}"
+    await status.edit_text("<b>Fetching MP4 link…</b>", parse_mode=ParseMode.HTML)
 
-    await status.edit_text("<b>Downloading video…</b>", parse_mode=ParseMode.HTML)
-
-    # STEP 2 — yt-dlp but NOT on youtube.com (no block)
-    temp_dir = tempfile.mkdtemp()
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "format": "best[ext=mp4]/best",
-        "outtmpl": os.path.join(temp_dir, "%(title)s.%(ext)s"),
-        "merge_output_format": "mp4",
+    # ✔ Step 2 — ytstream RapidAPI request (works for MP4)
+    api_url = "https://ytstream-download-youtube-videos.p.rapidapi.com/dl"
+    headers = {
+        "X-RapidAPI-Key": RAPIDAPI_KEY,
+        "X-RapidAPI-Host": "ytstream-download-youtube-videos.p.rapidapi.com",
     }
+    params = {"id": video_id}
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(inv_url, download=True)
-            file_path = ydl.prepare_filename(info)
-    except Exception as e:
-        await status.edit_text(
-            f"❌ Failed (mirror unavailable):\n<code>{e}</code>",
-            parse_mode=ParseMode.HTML
-        )
-        return
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(api_url, headers=headers, params=params) as r:
+                data = await r.json()
+        except:
+            data = {}
 
-    # STEP 3 — upload video
-    await status.edit_text("<b>Uploading video…</b>", parse_mode=ParseMode.HTML)
+        formats = data.get("formats", [])
+        mp4_link = None
 
+        # find first mp4 link
+        for fmt in formats:
+            if "mp4" in fmt.get("format", "").lower():
+                mp4_link = fmt.get("url")
+                break
+
+        if not mp4_link:
+            await status.edit_text("❌ Could not fetch MP4 link.", parse_mode=ParseMode.HTML)
+            return
+
+        await status.edit_text("<b>Downloading video…</b>", parse_mode=ParseMode.HTML)
+
+        # ✔ Step 3 — Download MP4 file
+        async with session.get(mp4_link) as resp:
+            video_bytes = await resp.read()
+
+        fd, temp_path = tempfile.mkstemp(suffix=".mp4")
+        os.close(fd)
+
+        with open(temp_path, "wb") as f:
+            f.write(video_bytes)
+
+    await status.edit_text("<b>Uploading…</b>", parse_mode=ParseMode.HTML)
+
+    # ✔ Step 4 — Upload to Telegram
     try:
         await client.send_video(
             message.chat.id,
-            open(file_path, "rb"),
-            caption=f"🎬 {info.get('title', query)}",
-            supports_streaming=True,
+            open(temp_path, "rb"),
+            caption=f"🎬 {query}",
+            supports_streaming=True
         )
         await status.delete()
     except Exception as e:
-        await status.edit_text(f"❌ Upload failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
+        await status.edit_text(
+            f"❌ Upload failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML
+        )
     finally:
-        try:
-            os.remove(file_path)
-            os.rmdir(temp_dir)
-        except:
-            pass
+        try: os.remove(temp_path)
+        except: pass
 
 
 @handler_client.on_message(filters.command("play"))
