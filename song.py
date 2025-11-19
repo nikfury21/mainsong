@@ -1131,91 +1131,69 @@ def ytdlp_download_mp4(video_id: str, out_dir: str):
 
         return {"filepath": filename, "title": title, "duration": duration, "thumb": thumb_path}
 
+import urllib.parse
+import json
+import aiohttp
+
 @handler_client.on_message(filters.command("video"))
-async def video_command(client: Client, message: Message):
-    """Usage: /video <query> — finds first YouTube result and sends MP4 (no cookies/login)."""
-    query = " ".join(message.command[1:]).strip()
+async def video_command(client, message):
+    query = " ".join(message.command[1:])
     if not query:
-        await message.reply_text("Please provide a search query, e.g. /video never gonna give you up")
-        return
+        return await message.reply_text("Usage: /video <search query>")
 
-    progress = await message.reply_text(f"🔎 Searching YouTube for: <b>{query}</b>", parse_mode=ParseMode.HTML)
+    msg = await message.reply_text(f"Searching for: <b>{query}</b>", parse_mode="html")
 
-    # 1) find the first recommended video id (uses html_youtube_first already in file)
+    # 1) Get first YouTube result using your existing search function
     try:
-        vid = await html_youtube_first(query)
+        video_id = await html_youtube_first(query)
     except Exception as e:
-        await progress.edit_text(f"❌ Search failed: <code>{e}</code>", parse_mode=ParseMode.HTML)
-        return
+        return await msg.edit(f"Search failed: <code>{e}</code>", parse_mode="html")
 
-    if not vid:
-        await progress.edit_text("❌ No YouTube results found.")
-        return
+    if not video_id:
+        return await msg.edit("No results found.")
 
-    await progress.edit_text(f"⬇️ Found video: <code>{vid}</code>\nStarting download...", parse_mode=ParseMode.HTML)
+    await msg.edit(f"Found video ID: <code>{video_id}</code>\nFetching MP4 stream…", parse_mode="html")
 
-    # 2) create a temp dir and run blocking yt_dlp inside executor
-    tmpdir = tempfile.mkdtemp(prefix="tg_video_")
-    loop = asyncio.get_event_loop()
+    # 2) Fetch get_video_info (no cookies, no login)
+    info_url = f"https://www.youtube.com/get_video_info?html5=1&video_id={video_id}"
+
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            fut = loop.run_in_executor(pool, partial(ytdlp_download_mp4, vid, tmpdir))
-            # Basic timeout guard (optional) - can be adjusted or removed
-            try:
-                result = await asyncio.wait_for(fut, timeout=900)  # 15 minutes hard cap
-            except asyncio.TimeoutError:
-                await progress.edit_text("❌ Download timed out (took too long).", parse_mode=ParseMode.HTML)
-                return
+        async with aiohttp.ClientSession() as session:
+            async with session.get(info_url) as resp:
+                txt = await resp.text()
+    except Exception as e:
+        return await msg.edit(f"Failed to fetch video info: <code>{e}</code>", parse_mode="html")
 
-        filepath = result.get("filepath")
-        title = result.get("title") or query
-        duration = result.get("duration") or 0
-        thumb_path = result.get("thumb")
+    # 3) Parse player_response JSON
+    try:
+        data = urllib.parse.parse_qs(txt)
+        player = json.loads(data["player_response"][0])
+        formats = player["streamingData"]["formats"]
+    except Exception as e:
+        return await msg.edit(f"Cannot parse video info: <code>{e}</code>", parse_mode="html")
 
-        # if the downloader returned a non-absolute path, join with tmpdir
-        if filepath and not os.path.isabs(filepath):
-            filepath = os.path.join(tmpdir, filepath)
+    # 4) Find MP4 itag=18 (always available, video+audio)
+    itag18 = next((f for f in formats if f.get("itag") == 18), None)
 
-        if not filepath or not os.path.exists(filepath):
-            await progress.edit_text("❌ Download failed: file not found after yt_dlp run.", parse_mode=ParseMode.HTML)
-            return
+    if not itag18 or "url" not in itag18:
+        return await msg.edit("MP4 stream not found for this video.")
 
-        # File size check (Telegram limits). If it's bigger than MAX_TELEGRAM_FILESIZE, fail gracefully.
-        size = os.path.getsize(filepath)
-        if size > MAX_TELEGRAM_FILESIZE:
-            await progress.edit_text(
-                f"❌ Download completed but file is too large to upload to Telegram ({size / (1024**3):.2f} GB).",
-                parse_mode=ParseMode.HTML
-            )
-            return
+    mp4_url = itag18["url"]
 
-        # 3) Upload to Telegram
-        await progress.edit_text(f"📤 Uploading <b>{title}</b> ({format_time(duration)}) …", parse_mode=ParseMode.HTML)
+    # 5) Send video directly (Telegram downloads it)
+    await msg.edit("Uploading video…")
 
-        try:
-            # send as video (streaming, supports larger files for userbot accounts)
-            await client.send_video(
-                chat_id=message.chat.id,
-                video=filepath,
-                supports_streaming=True,
-                thumb=thumb_path if thumb_path and os.path.exists(thumb_path) else None,
-                caption=f"🎬 {title}\n\nRequested by: <a href='tg://user?id={message.from_user.id}'>{message.from_user.first_name}</a>",
-                parse_mode=ParseMode.HTML,
-            )
-            await progress.delete()
-        except Exception as e:
-            await progress.edit_text(f"❌ Upload failed: <code>{e}</code>", parse_mode=ParseMode.HTML)
-            return
-
-    except Exception as exc:
-        await progress.edit_text(f"❌ Unexpected error: <code>{exc}</code>", parse_mode=ParseMode.HTML)
-        return
-    finally:
-        # cleanup
-        try:
-            shutil.rmtree(tmpdir)
-        except Exception:
-            pass
+    try:
+        await client.send_video(
+            chat_id=message.chat.id,
+            video=mp4_url,
+            caption=f"🎬 <b>Your video</b>\nQuery: {query}",
+            parse_mode="html",
+            supports_streaming=True
+        )
+        await msg.delete()
+    except Exception as e:
+        await msg.edit(f"Upload failed: <code>{e}</code>", parse_mode="html")
 
 # -------------------------
 # Startup / shutdown helpers
