@@ -493,7 +493,7 @@ async def videodebug(client, message):
 # ============================================================
 @handler_client.on_message(filters.command("video"))
 async def video_command(client: Client, message: Message):
-    import aiohttp, tempfile, os, traceback, subprocess
+    import aiohttp, tempfile, os, traceback
     from pyrogram.enums import ParseMode
 
     ADMIN = 8353079084
@@ -505,129 +505,73 @@ async def video_command(client: Client, message: Message):
     status = await message.reply("<b>Searching…</b>", parse_mode=ParseMode.HTML)
 
     try:
-        # STEP 1 — YouTube search
+        # STEP 1 — Search video ID
         video_id = await html_youtube_first(query)
         if not video_id:
             return await status.edit("❌ No YouTube results found.", parse_mode=ParseMode.HTML)
 
-        await status.edit("<b>Fetching streams…</b>", parse_mode=ParseMode.HTML)
+        await status.edit("<b>Fetching MP4 streams…</b>", parse_mode=ParseMode.HTML)
 
-        # STEP 2 — Get raw streams (video-only + audio-only)
+        # STEP 2 — Fetch combined audio+video MP4 (always available)
         url = "https://cloud-api-hub-youtube-downloader.p.rapidapi.com/download"
         headers = {
             "x-rapidapi-host": "cloud-api-hub-youtube-downloader.p.rapidapi.com",
             "x-rapidapi-key": RAPID2,
         }
-        params = {"id": video_id, "filter": "video"}  # get all streams
+        params = {"id": video_id, "filter": "audioandvideo"}
 
         async with aiohttp.ClientSession() as s:
             async with s.get(url, headers=headers, params=params) as r:
                 if r.status != 200:
-                    raise Exception(f"/download API error {r.status}")
-                streams = await r.json()
+                    raise Exception("API returned non-200 status.")
+                formats = await r.json()
 
-        # Separate audio-only + highest video-only stream
-        video_stream = None
-        audio_stream = None
+        # formats is a list — pick highest resolution MP4
+        best = None
+        for f in formats:
+            if f.get("mimeType", "").startswith("video") and f.get("container") == "mp4":
+                if not best or int(f.get("height", 0)) > int(best.get("height", 0)):
+                    best = f
 
-        # Pick **highest video resolution**
-        for f in streams:
-            if f.get("hasVideo") and not f.get("hasAudio"):
-                if not video_stream or int(f.get("height",0)) > int(video_stream.get("height",0)):
-                    video_stream = f
+        if not best:
+            raise Exception("No MP4 formats found from API")
 
-        # Fetch audio-only stream
-        params = {"id": video_id, "filter": "audioonly"}
+        mp4_url = best.get("url")
+        if not mp4_url:
+            raise Exception("API returned a format with no URL")
+
+        await status.edit("<b>Downloading MP4…</b>", parse_mode=ParseMode.HTML)
+
+        # STEP 3 — Download file
+        fd, temp_path = tempfile.mkstemp(suffix=".mp4")
+        os.close(fd)
+
         async with aiohttp.ClientSession() as s:
-            async with s.get(url, headers=headers, params=params) as r:
+            async with s.get(mp4_url, headers={"Range": "bytes=0-"}) as r:
                 if r.status != 200:
-                    raise Exception(f"/download audio API error {r.status}")
-                audios = await r.json()
-
-        # Pick best audio
-        for a in audios:
-            if a.get("hasAudio") and not a.get("hasVideo"):
-                audio_stream = a
-                break
-
-        if not video_stream:
-            raise Exception("No video-only stream found")
-        if not audio_stream:
-            raise Exception("No audio-only stream found")
-
-        # URLs
-        video_url = video_stream["url"]
-        audio_url = audio_stream["url"]
-
-        await status.edit("<b>Downloading streams…</b>", parse_mode=ParseMode.HTML)
-
-        # STEP 3 — Download raw video
-        fd_v, video_path = tempfile.mkstemp(suffix=".mp4")
-        os.close(fd_v)
-
-        async with aiohttp.ClientSession() as s:
-            async with s.get(video_url, headers={"Range":"bytes=0-"}) as r:
-                if r.status not in [200,206]:
-                    raise Exception(f"Video stream HTTP {r.status}")
-                with open(video_path, "wb") as f:
+                    raise Exception("Download failed.")
+                with open(temp_path, "wb") as f:
                     f.write(await r.read())
 
-        # STEP 4 — Download raw audio
-        fd_a, audio_path = tempfile.mkstemp(suffix=".m4a")
-        os.close(fd_a)
-
-        async with aiohttp.ClientSession() as s:
-            async with s.get(audio_url, headers={"Range":"bytes=0-"}) as r:
-                if r.status not in [200,206]:
-                    raise Exception(f"Audio stream HTTP {r.status}")
-                with open(audio_path, "wb") as f:
-                    f.write(await r.read())
-
-        await status.edit("<b>Merging video + audio…</b>", parse_mode=ParseMode.HTML)
-
-        # STEP 5 — Merge using ffmpeg (lossless)
-        fd_f, final_path = tempfile.mkstemp(suffix=".mp4")
-        os.close(fd_f)
-
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-i", video_path,
-            "-i", audio_path,
-            "-c", "copy",
-            final_path
-        ]
-
-        process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-        if process.returncode != 0:
-            raise Exception("FFmpeg merge failed:\n" + process.stderr.decode())
-
+        # STEP 4 — Upload to Telegram
         await status.edit("<b>Uploading…</b>", parse_mode=ParseMode.HTML)
 
         await client.send_video(
-            message.chat.id,
-            video=final_path,
+            chat_id=message.chat.id,
+            video=temp_path,
             caption=f"🎬 {query}",
             supports_streaming=True
         )
 
         await status.delete()
-
-        # Cleanup
-        os.remove(video_path)
-        os.remove(audio_path)
-        os.remove(final_path)
+        os.remove(temp_path)
 
     except Exception as e:
         await message.reply("❌ Error occurred. Logs sent to admin.")
         full = "".join(traceback.format_exception(type(e), e, e.__traceback__))
         await client.send_message(
             ADMIN,
-            f"⚠ ERROR IN /video\n\n"
-            f"Query: {query}\n"
-            f"Chat: {message.chat.id}\n\n"
-            f"<code>{full}</code>",
+            f"⚠ ERROR IN /video\n\nQuery: {query}\nChat: {message.chat.id}\n\n<code>{full}</code>",
             parse_mode=ParseMode.HTML
         )
 
