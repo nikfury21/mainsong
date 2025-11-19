@@ -435,126 +435,89 @@ async def song_command(client: Client, message: Message):
         except: pass
 
     
-@handler_client.on_message(filters.command("video"))
-async def video_command(client: Client, message: Message):
-    import aiohttp, json
-    from html import escape
+from pyrogram import filters
+from pyrogram.types import (
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    CallbackQuery
+)
+from yt_qualities import get_all_qualities
+import os, aiohttp, tempfile, shutil, asyncio
+from html import escape
+import yt_dlp
 
+
+@handler_client.on_message(filters.command("video"))
+async def video_command(client, message):
     user_query = " ".join(message.command[1:]).strip()
     if not user_query:
-        return await message.reply_text("Please provide a search query.")
+        return await message.reply_text("Please provide a search query after /video.")
 
-    msg = await message.reply_text("Searching YouTube…")
+    msg = await message.reply_text("<b>Searching YouTube…</b>", parse_mode="HTML")
 
-    # Your working search (no captcha)
+    # Find video id (your helper)
     try:
         vid = await html_youtube_first(user_query)
     except:
-        return await msg.edit_text("No results found.")
+        vid = None
 
-    await msg.edit_text("Fetching qualities…")
+    if not vid:
+        return await msg.edit_text("❌ No matching video found.")
 
-    # GUARANTEED WORKING embedded client endpoint
-    api_url = (
-        "https://www.youtube.com/youtubei/v1/player?"
-        "key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_9N0uQg"
-    )
+    await msg.edit_text("<b>Fetching available qualities…</b>")
 
-    payload = {
-        "context": {
-            "client": {
-                "clientName": "WEB_EMBEDDED_PLAYER",
-                "clientVersion": "2.20240222.01.00"
-            }
-        },
-        "videoId": vid,
-        "playbackContext": {
-            "contentPlaybackContext": {
-                "signatureTimestamp": 19335
-            }
-        }
-    }
+    try:
+        qualities = await get_all_qualities(vid)
+    except Exception as e:
+        return await msg.edit_text(f"❌ Failed to fetch qualities.\n{escape(str(e))}")
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(api_url, json=payload) as r:
-            txt = await r.text()
-            if r.status != 200:
-                return await msg.edit_text("Cannot fetch video qualities.")
-            try:
-                data = json.loads(txt)
-            except:
-                return await msg.edit_text("Invalid response from YouTube.")
-
-    # Extract formats
-    streaming = data.get("streamingData", {})
-    formats = streaming.get("formats", []) + streaming.get("adaptiveFormats", [])
-
-    quality_map = {}
-    for f in formats:
-        if f.get("height") and f.get("itag") and f.get("mimeType", "").startswith("video/"):
-            quality_map[f["height"]] = f["itag"]
-
-    if not quality_map:
-        return await msg.edit_text("Could not read qualities from YouTube.")
-
-    qualities = sorted(quality_map.keys())
-    title = data.get("videoDetails", {}).get("title", "Video")
+    if not qualities:
+        return await msg.edit_text("❌ No downloadable qualities found.")
 
     # Build inline keyboard
-    from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-    rows = []
+    buttons = []
     row = []
 
     for q in qualities:
+        label = f"{q['height']}p"
         row.append(
             InlineKeyboardButton(
-                f"{q}p",
-                callback_data=f"vdsel|{vid}|{quality_map[q]}|{q}"
+                label,
+                callback_data=f"vdsel|{vid}|{q['itag']}|{q['height']}"
             )
         )
         if len(row) == 3:
-            rows.append(row)
+            buttons.append(row)
             row = []
 
     if row:
-        rows.append(row)
+        buttons.append(row)
 
     await msg.edit_text(
-        f"<b>Select quality for</b>:\n{escape(title)}",
-        reply_markup=InlineKeyboardMarkup(rows)
+        f"<b>Select quality for:</b>\nhttps://youtu.be/{vid}",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        disable_web_page_preview=True
     )
-
 
 
 @handler_client.on_callback_query(filters.regex(r"^vdsel\|"))
-async def video_quality_download(client, callback):
-    import os, tempfile, shutil
-    from html import escape
-    import yt_dlp
+async def video_quality_selected(client, query: CallbackQuery):
+    _, vid, itag, quality = query.data.split("|")
 
-    _, vid, fmt_id, qual = callback.data.split("|")
-
-    msg = await callback.message.edit_text(
-        f"⏳ Downloading {qual}p…"
+    await query.message.edit_text(
+        f"<b>Downloading {quality}p…</b>",
+        parse_mode="HTML"
     )
 
-    temp_dir = tempfile.mkdtemp(prefix="vdl_")
-    outpath = os.path.join(temp_dir, "%(title)s.%(ext)s")
+    temp_dir = tempfile.mkdtemp(prefix="yt_dl_")
+    output_path = os.path.join(temp_dir, "%(title)s.%(ext)s")
 
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
-        "format": f"{fmt_id}+bestaudio[ext=m4a]/best",
-        "merge_output_format": "mp4",
-        "outtmpl": outpath,
-        "nocheckcertificate": True,
-        # VERY IMPORTANT → same captcha-free behavior as your working code
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android"],
-                "player_skip": ["web"]
-            }
-        },
+        "outtmpl": output_path,
+        "noplaylist": True,
+        "format": itag,  # download only selected quality
     }
 
     url = f"https://www.youtube.com/watch?v={vid}"
@@ -563,26 +526,41 @@ async def video_quality_download(client, callback):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
-    except Exception as e:
-        return await msg.edit_text(f"❌ Download failed:\n<code>{escape(str(e))}</code>")
+            if not os.path.exists(filename):
+                alt = os.path.splitext(filename)[0] + ".mp4"
+                if os.path.exists(alt):
+                    filename = alt
 
-    await msg.edit_text("Uploading…")
+    except Exception as e:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        return await query.message.edit_text(
+            f"❌ Download failed.\n<code>{escape(str(e))}</code>",
+            parse_mode="HTML"
+        )
+
+    await query.message.edit_text("<b>Uploading…</b>", parse_mode="HTML")
 
     try:
         with open(filename, "rb") as f:
             await client.send_video(
-                chat_id=callback.message.chat.id,
+                chat_id=query.message.chat.id,
                 video=f,
-                caption=f"<b>{escape(info['title'])}</b>\n{qual}p\nhttps://youtu.be/{vid}",
+                caption=f"<b>Quality:</b> {quality}p\nhttps://youtu.be/{vid}",
                 parse_mode="HTML",
                 supports_streaming=True
             )
-        await msg.delete()
-    except Exception as e:
-        await msg.edit_text(f"Upload failed:\n<code>{escape(str(e))}</code>")
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
 
+        await query.message.delete()
+
+    except Exception as e:
+        await query.message.edit_text(f"❌ Upload failed.\n{escape(str(e))}")
+
+    finally:
+        try:
+            os.remove(filename)
+        except:
+            pass
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 
