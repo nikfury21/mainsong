@@ -494,55 +494,66 @@ async def video_command(client: Client, message: Message):
     import aiohttp, tempfile, os, traceback
     from pyrogram.enums import ParseMode
 
-    ADMIN = 8353079084  # your Telegram ID
+    ADMIN = 8353079084   # your Telegram ID
 
     query = " ".join(message.command[1:])
     if not query:
-        return await message.reply("Usage: /video <search query>")
+        return await message.reply("Usage: /video <query>")
 
     try:
-        status = await message.reply("<b>Searching YouTube…</b>", parse_mode=ParseMode.HTML)
+        status = await message.reply("<b>Searching…</b>", parse_mode=ParseMode.HTML)
 
-        # STEP 1: first recommended YouTube video
+        # Step 1: Get first recommended video
         video_id = await html_youtube_first(query)
         if not video_id:
-            return await status.edit("❌ No matching video found.", parse_mode=ParseMode.HTML)
+            return await status.edit("❌ No results found.", parse_mode=ParseMode.HTML)
 
-        await status.edit("<b>Fetching MP4 stream…</b>", parse_mode=ParseMode.HTML)
+        await status.edit("<b>Fetching MP4 links…</b>", parse_mode=ParseMode.HTML)
 
-        # STEP 2: Use piped.video (NO cookies, NO expiry, ALWAYS works)
-        piped_api = f"https://piped.video/streams/{video_id}"
+        # Step 2: Call DataFanatic API
+        url = f"https://youtube-media-downloader.p.rapidapi.com/v2/video/details"
+        headers = {
+            "x-rapidapi-host": "youtube-media-downloader.p.rapidapi.com",
+            "x-rapidapi-key": RAPIDAPI_KEY,
+        }
+        params = {
+            "videoId": video_id,
+            "urlAccess": "normal",
+            "videos": "auto",
+            "audios": "auto",
+        }
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(piped_api) as r:
+            async with session.get(url, headers=headers, params=params) as r:
                 if r.status != 200:
-                    raise Exception("Failed to fetch piped.video stream info.")
+                    raise Exception("API returned non-200 status.")
                 data = await r.json()
 
-            # choose MP4 only
-            mp4_streams = [
-                s for s in data.get("videoStreams", [])
-                if "video/mp4" in s.get("mimeType", "").lower()
-            ]
+        # Step 3: Extract MP4 link
+        video_streams = data.get("videos", [])
+        mp4_url = None
 
-            if not mp4_streams:
-                raise Exception("No MP4 available for this video.")
+        for stream in video_streams:
+            if stream.get("type") == "mp4":
+                mp4_url = stream.get("url")
+                break
 
-            # choose BEST MP4 (first entry)
-            best = mp4_streams[0]
-            download_url = best["url"]
+        if not mp4_url:
+            raise Exception("No MP4 links found for this video.")
 
-            await status.edit("<b>Downloading video…</b>", parse_mode=ParseMode.HTML)
+        await status.edit("<b>Downloading…</b>", parse_mode=ParseMode.HTML)
 
-            async with session.get(download_url) as resp:
+        # Step 4: Download MP4
+        async with aiohttp.ClientSession() as session:
+            async with session.get(mp4_url) as resp:
                 if resp.status != 200:
-                    raise Exception("Download failed (non-200 response).")
+                    raise Exception("MP4 download failed.")
                 video_bytes = await resp.read()
 
-            if len(video_bytes) < 200_000:
-                raise Exception("Downloaded MP4 is too small (corrupted).")
+        if len(video_bytes) < 200_000:
+            raise Exception("Downloaded file too small (corrupted).")
 
-        # save to temp file
+        # Save to temp file
         fd, temp_path = tempfile.mkstemp(suffix=".mp4")
         os.close(fd)
         with open(temp_path, "wb") as f:
@@ -551,30 +562,29 @@ async def video_command(client: Client, message: Message):
         await status.edit("<b>Uploading…</b>", parse_mode=ParseMode.HTML)
 
         await client.send_video(
-            chat_id=message.chat.id,
-            video=open(temp_path, "rb"),
+            message.chat.id,
+            open(temp_path, "rb"),
             caption=f"🎬 {query}",
             supports_streaming=True
         )
 
-        await status.delete()
         os.remove(temp_path)
+        return await status.delete()
 
     except Exception as e:
+        # User-safe error
         await message.reply("❌ Error occurred. Logs sent to admin.")
 
-        # admin DM
+        # Admin error log
         try:
-            full_err = "".join(
-                traceback.format_exception(type(e), e, e.__traceback__)
-            )
+            full_err = "".join(traceback.format_exception(type(e), e, e.__traceback__))
             await client.send_message(
                 ADMIN,
                 f"⚠️ ERROR in /video\n\n"
                 f"<b>Query:</b> {query}\n"
                 f"<b>Chat:</b> {message.chat.id}\n\n"
                 f"<b>Error:</b>\n<code>{full_err}</code>",
-                parse_mode=ParseMode.HTML
+                parse_mode=ParseMode.HTML,
             )
         except:
             pass
