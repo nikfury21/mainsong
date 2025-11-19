@@ -494,7 +494,7 @@ async def video_command(client: Client, message: Message):
     import aiohttp, tempfile, os, traceback
     from pyrogram.enums import ParseMode
 
-    ADMIN = 8353079084
+    ADMIN = 8353079084   # your Telegram ID
 
     query = " ".join(message.command[1:])
     if not query:
@@ -503,14 +503,14 @@ async def video_command(client: Client, message: Message):
     try:
         status = await message.reply("<b>Searching…</b>", parse_mode=ParseMode.HTML)
 
-        # 1) First YouTube recommended video
+        # STEP 1 — first YouTube recommended video
         video_id = await html_youtube_first(query)
         if not video_id:
-            return await status.edit("❌ No results found.", parse_mode=ParseMode.HTML)
+            return await status.edit("❌ No YouTube results found.", parse_mode=ParseMode.HTML)
 
-        await status.edit("<b>Fetching MP4 links…</b>", parse_mode=ParseMode.HTML)
+        await status.edit("<b>Fetching direct MP4 link…</b>", parse_mode=ParseMode.HTML)
 
-        # 2) DataFanatic API
+        # STEP 2 — Call RapidAPI DataFanatic
         url = "https://youtube-media-downloader.p.rapidapi.com/v2/video/details"
         headers = {
             "x-rapidapi-host": "youtube-media-downloader.p.rapidapi.com",
@@ -526,45 +526,35 @@ async def video_command(client: Client, message: Message):
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers, params=params) as r:
                 if r.status != 200:
-                    raise Exception("API returned non-200.")
+                    raise Exception(f"API error: {r.status}")
                 data = await r.json()
 
-        # 3) Extract MP4 URL based on REAL structure (from your debug2.json)
+        # STEP 3 — find itag 18 (full MP4 with audio)
+        formats = data.get("formats", [])
         mp4_url = None
 
-        videos = data.get("videos", {})
-
-        # FIRST PRIORITY → auto (always MP4 with audio)
-        auto_list = videos.get("auto", [])
-        if isinstance(auto_list, list) and len(auto_list) > 0:
-            mp4_url = auto_list[0]   # pick best mp4
-        
-
-        # SECOND PRIORITY → adaptiveFormats containers
-        if not mp4_url:
-            adaptive = videos.get("adaptiveFormats", [])
-            for fmt in adaptive:
-                mime = fmt.get("mimeType", "")
-                if "video/mp4" in mime and fmt.get("url"):
-                    mp4_url = fmt["url"]
-                    break
+        for fmt in formats:
+            if str(fmt.get("itag")) == "18":
+                mp4_url = fmt.get("url")
+                break
 
         if not mp4_url:
-            raise Exception("No MP4 link found in API response.")
+            raise Exception("itag 18 MP4 not found in API response.")
 
-        await status.edit("<b>Downloading…</b>", parse_mode=ParseMode.HTML)
+        await status.edit("<b>Downloading MP4…</b>", parse_mode=ParseMode.HTML)
 
-        # 4) Download the MP4
+        # STEP 4 — download video with retry
         async with aiohttp.ClientSession() as session:
             async with session.get(mp4_url) as resp:
                 if resp.status != 200:
-                    raise Exception("Failed to download MP4.")
+                    raise Exception("Video download returned non-200.")
                 video_bytes = await resp.read()
 
-        if len(video_bytes) < 200_000:
-            raise Exception("Downloaded MP4 too small (corrupted).")
+        # Prevent 0-byte or corrupted file
+        if len(video_bytes) < 300_000:
+            raise Exception("File too small (0 bytes or corrupted).")
 
-        # Save temp file
+        # Save to temporary file
         fd, temp_path = tempfile.mkstemp(suffix=".mp4")
         os.close(fd)
         with open(temp_path, "wb") as f:
@@ -573,8 +563,8 @@ async def video_command(client: Client, message: Message):
         await status.edit("<b>Uploading…</b>", parse_mode=ParseMode.HTML)
 
         await client.send_video(
-            chat_id=message.chat.id,
-            video=open(temp_path, "rb"),
+            message.chat.id,
+            open(temp_path, "rb"),
             caption=f"🎬 {query}",
             supports_streaming=True
         )
@@ -583,16 +573,18 @@ async def video_command(client: Client, message: Message):
         os.remove(temp_path)
 
     except Exception as e:
+        # User-safe message
         await message.reply("❌ Error occurred. Logs sent to admin.")
 
+        # Admin log
         try:
             full = "".join(traceback.format_exception(type(e), e, e.__traceback__))
             await client.send_message(
                 ADMIN,
                 f"⚠ ERROR IN /video\n\n"
-                f"<b>Query:</b> {query}\n"
-                f"<b>Chat:</b> {message.chat.id}\n\n"
-                f"<b>Traceback:</b>\n<code>{full}</code>",
+                f"Query: {query}\n"
+                f"Chat: {message.chat.id}\n\n"
+                f"Traceback:\n<code>{full}</code>",
                 parse_mode=ParseMode.HTML
             )
         except:
