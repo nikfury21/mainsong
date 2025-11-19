@@ -437,46 +437,114 @@ async def song_command(client: Client, message: Message):
     
 @handler_client.on_message(filters.command("video"))
 async def video_command(client: Client, message: Message):
-    import tempfile, os, time, shutil
+    import os, time, shutil, tempfile
     from html import escape
 
     user_query = " ".join(message.command[1:]).strip()
     if not user_query:
-        await message.reply_text("Provide a query after /video.")
-        return
+        return await message.reply("Please provide a search query after /video.")
 
-    msg = await message.reply_text("Searching YouTube…")
+    msg = await message.reply_text("Searching for the video…")
 
-    # 1. Get top result (cookie-free)
+    # Find video ID
     try:
         vid = await html_youtube_first(user_query)
     except:
         vid = None
 
     if not vid:
-        await msg.edit_text("No results found.")
-        return
+        return await msg.edit_text("No results found.")
 
     url = f"https://www.youtube.com/watch?v={vid}"
 
-    await msg.edit_text("Found video! Downloading fastest available MP4…")
+    await msg.edit_text("Fetching available qualities…")
 
-    # 2. FASTEST: Download "best progressive" MP4  
-    temp_dir = tempfile.mkdtemp(prefix="fastmp4_")
+    # TEMP DIR (no download yet)
+    temp_dir = tempfile.mkdtemp(prefix="yt_info_")
+
+    # yt-dlp info without download
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android"],
+                "player_skip": ["web"]
+            }
+        },
+        "nocheckcertificate": True
+    }
+
+    import yt_dlp
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+
+    title = info.get("title", "Video")
+    formats = info.get("formats", [])
+
+    # Filter available video qualities
+    quality_map = {}
+    for f in formats:
+        if f.get("vcodec") != "none":
+            height = f.get("height")
+            if height:
+                quality_map[height] = f["format_id"]
+
+    # Sort qualities ascending
+    qualities = sorted(quality_map.keys())
+
+    # Create inline buttons
+    from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+    rows = []
+    row = []
+    for q in qualities:
+        text = f"{q}p"
+        cb = f"video_dl|{vid}|{quality_map[q]}|{q}"
+        row.append(InlineKeyboardButton(text, callback_data=cb))
+
+        if len(row) == 3:
+            rows.append(row)
+            row = []
+
+    if row:
+        rows.append(row)
+
+    markup = InlineKeyboardMarkup(rows)
+
+    await msg.edit_text(
+        f"<b>Select quality for:</b>\n{escape(title)}",
+        reply_markup=markup
+    )
+
+
+@handler_client.on_callback_query(filters.regex(r"^video_dl\|"))
+async def video_download_callback(client, callback):
+    import os, tempfile, shutil, time
+    from html import escape
+
+    _, vid, fmt_id, qual = callback.data.split("|")
+    url = f"https://www.youtube.com/watch?v={vid}"
+
+    msg = await callback.message.edit_text(
+        f"Downloading {qual} video…"
+    )
+
+    temp_dir = tempfile.mkdtemp(prefix="yt_dl_")
     out_path = os.path.join(temp_dir, "%(title)s.%(ext)s")
 
+    # yt-dlp options for EXACT format
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
 
-        # FAST progressive + fallback
-        "format": "bv*[ext=mp4][vcodec*=avc1]+ba[ext=m4a]/best[ext=mp4]/best",
+        "format": fmt_id + "+bestaudio/best",
 
-        "outtmpl": out_path,
-        "noplaylist": True,
         "merge_output_format": "mp4",
+        "outtmpl": out_path,
 
-        # 🚀 MAIN FIX: FORCE ANDROID CLIENT to bypass login/bot checks
         "extractor_args": {
             "youtube": {
                 "player_client": ["android"],
@@ -487,41 +555,34 @@ async def video_command(client: Client, message: Message):
         "nocheckcertificate": True,
     }
 
+    import yt_dlp
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
-
-            # Fix filename if yt-dlp renamed it
-            if not os.path.exists(filename):
-                alt = os.path.splitext(filename)[0] + ".mp4"
-                if os.path.exists(alt):
-                    filename = alt
-
     except Exception as e:
-        await msg.edit_text(f"Download error: {escape(str(e))}")
+        await msg.edit_text(f"❌ Download failed:\n<code>{escape(str(e))}</code>")
         shutil.rmtree(temp_dir, ignore_errors=True)
         return
 
-    await msg.edit_text("Uploading video to Telegram (fast)…")
+    await msg.edit_text(f"Uploading {qual}…")
 
     try:
         with open(filename, "rb") as f:
             await client.send_video(
-                chat_id=message.chat.id,
+                chat_id=callback.message.chat.id,
                 video=f,
-                caption=f"<b>{escape(info['title'])}</b>\nhttps://youtu.be/{vid}",
+                caption=f"<b>{escape(info['title'])}</b>\n{qual}\nhttps://youtu.be/{vid}",
                 parse_mode="HTML",
                 supports_streaming=True
             )
+
+        await msg.delete()
+
     except Exception as e:
-        await msg.edit_text(f"Upload failed: {escape(str(e))}")
+        await msg.edit_text(f"❌ Upload failed:\n<code>{escape(str(e))}</code>")
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
-        try:
-            await msg.delete()
-        except:
-            pass
 
 
 
