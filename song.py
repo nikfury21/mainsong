@@ -447,42 +447,60 @@ from html import escape
 import yt_dlp
 
 
+from pyrogram import filters
+from pyrogram.types import (
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    CallbackQuery
+)
+from pyrogram.enums import ParseMode
+from yt_qualities import get_all_qualities
+import os, aiohttp, tempfile, shutil, asyncio
+from html import escape
+import yt_dlp
+
+
 @handler_client.on_message(filters.command("video"))
 async def video_command(client, message):
     user_query = " ".join(message.command[1:]).strip()
     if not user_query:
         return await message.reply_text("Please provide a search query after /video.")
 
-    msg = await message.reply_text("<b>Searching YouTube…</b>", parse_mode="HTML")
+    msg = await message.reply_text(
+        "<b>Searching YouTube…</b>",
+        parse_mode=ParseMode.HTML
+    )
 
-    # Find video id (your helper)
+    # Find video id
     try:
         vid = await html_youtube_first(user_query)
     except:
         vid = None
 
     if not vid:
-        return await msg.edit_text("❌ No matching video found.")
+        return await msg.edit_text("❌ No matching video found.", parse_mode=ParseMode.HTML)
 
-    await msg.edit_text("<b>Fetching available qualities…</b>")
+    await msg.edit_text("<b>Fetching available qualities…</b>", parse_mode=ParseMode.HTML)
 
     try:
         qualities = await get_all_qualities(vid)
     except Exception as e:
-        return await msg.edit_text(f"❌ Failed to fetch qualities.\n{escape(str(e))}")
+        return await msg.edit_text(
+            f"❌ Failed to fetch qualities.\n<code>{escape(str(e))}</code>",
+            parse_mode=ParseMode.HTML
+        )
 
     if not qualities:
-        return await msg.edit_text("❌ No downloadable qualities found.")
+        return await msg.edit_text("❌ No downloadable qualities found.", parse_mode=ParseMode.HTML)
 
     # Build inline keyboard
     buttons = []
     row = []
 
     for q in qualities:
-        label = f"{q['height']}p"
         row.append(
             InlineKeyboardButton(
-                label,
+                f"{q['height']}p",
                 callback_data=f"vdsel|{vid}|{q['itag']}|{q['height']}"
             )
         )
@@ -496,6 +514,7 @@ async def video_command(client, message):
     await msg.edit_text(
         f"<b>Select quality for:</b>\nhttps://youtu.be/{vid}",
         reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode=ParseMode.HTML,
         disable_web_page_preview=True
     )
 
@@ -506,7 +525,7 @@ async def video_quality_selected(client, query: CallbackQuery):
 
     await query.message.edit_text(
         f"<b>Downloading {quality}p…</b>",
-        parse_mode="HTML"
+        parse_mode=ParseMode.HTML
     )
 
     temp_dir = tempfile.mkdtemp(prefix="yt_dl_")
@@ -517,7 +536,7 @@ async def video_quality_selected(client, query: CallbackQuery):
         "no_warnings": True,
         "outtmpl": output_path,
         "noplaylist": True,
-        "format": itag,  # download only selected quality
+        "format": itag,
     }
 
     url = f"https://www.youtube.com/watch?v={vid}"
@@ -526,6 +545,7 @@ async def video_quality_selected(client, query: CallbackQuery):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
+
             if not os.path.exists(filename):
                 alt = os.path.splitext(filename)[0] + ".mp4"
                 if os.path.exists(alt):
@@ -535,10 +555,10 @@ async def video_quality_selected(client, query: CallbackQuery):
         shutil.rmtree(temp_dir, ignore_errors=True)
         return await query.message.edit_text(
             f"❌ Download failed.\n<code>{escape(str(e))}</code>",
-            parse_mode="HTML"
+            parse_mode=ParseMode.HTML
         )
 
-    await query.message.edit_text("<b>Uploading…</b>", parse_mode="HTML")
+    await query.message.edit_text("<b>Uploading…</b>", parse_mode=ParseMode.HTML)
 
     try:
         with open(filename, "rb") as f:
@@ -546,14 +566,17 @@ async def video_quality_selected(client, query: CallbackQuery):
                 chat_id=query.message.chat.id,
                 video=f,
                 caption=f"<b>Quality:</b> {quality}p\nhttps://youtu.be/{vid}",
-                parse_mode="HTML",
+                parse_mode=ParseMode.HTML,
                 supports_streaming=True
             )
 
         await query.message.delete()
 
     except Exception as e:
-        await query.message.edit_text(f"❌ Upload failed.\n{escape(str(e))}")
+        await query.message.edit_text(
+            f"❌ Upload failed.\n<code>{escape(str(e))}</code>",
+            parse_mode=ParseMode.HTML
+        )
 
     finally:
         try:
@@ -561,7 +584,6 @@ async def video_quality_selected(client, query: CallbackQuery):
         except:
             pass
         shutil.rmtree(temp_dir, ignore_errors=True)
-
 
 
 @handler_client.on_message(filters.command("play"))
