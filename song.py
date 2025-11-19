@@ -498,7 +498,7 @@ async def videodebug(client, message):
 # ============================================================
 @handler_client.on_message(filters.command("video"))
 async def video_command(client: Client, message: Message):
-    import aiohttp, os, tempfile, traceback
+    import aiohttp, os, tempfile, subprocess, traceback
     from pyrogram.enums import ParseMode
 
     ADMIN = 8353079084
@@ -509,16 +509,16 @@ async def video_command(client: Client, message: Message):
     status = await message.reply("<b>Searching…</b>", parse_mode=ParseMode.HTML)
 
     try:
-        # STEP 1 — Get YouTube video ID
+        # STEP 1 → YouTube search
         video_id = await html_youtube_first(query)
         if not video_id:
             return await status.edit("❌ No YouTube results found.")
 
         await status.edit("<b>Preparing video…</b>")
 
-        # ------------------------------------------------------------
-        #  STEP 2 — TRY MUX (highest quality merged audio+video)
-        # ------------------------------------------------------------
+        # ==========================================================
+        # TRY 1 — MUX (highest quality)
+        # ==========================================================
         mux_url = "https://cloud-api-hub-youtube-downloader.p.rapidapi.com/mux"
         mux_headers = {
             "x-rapidapi-host": "cloud-api-hub-youtube-downloader.p.rapidapi.com",
@@ -526,81 +526,120 @@ async def video_command(client: Client, message: Message):
         }
         mux_params = {"id": video_id, "quality": "max", "codec": "h264"}
 
-        mux_download_url = None
-
+        merged_url = None
         async with aiohttp.ClientSession() as s:
             async with s.get(mux_url, headers=mux_headers, params=mux_params) as r:
-                # rate limit / failure → fallback
-                if r.status != 200:
-                    mux_download_url = None
-                else:
-                    mx = await r.json()
-                    mux_download_url = mx.get("url")
+                if r.status == 200:
+                    j = await r.json()
+                    merged_url = j.get("url")
 
-        # ------------------------------------------------------------
-        #  IF MUX FAILED → FALLBACK TO /download (works for all vids)
-        # ------------------------------------------------------------
-        if not mux_download_url:
-            await status.edit("<b>Mux failed. Using fallback…</b>")
+        # ==========================================================
+        # TRY 2 — Fallback /download
+        # ==========================================================
+        if not merged_url:
+            await status.edit("Mux failed… falling back…")
 
             dl_url = "https://cloud-api-hub-youtube-downloader.p.rapidapi.com/download"
             dl_headers = {
                 "x-rapidapi-host": "cloud-api-hub-youtube-downloader.p.rapidapi.com",
                 "x-rapidapi-key": RAPID2,
             }
-            dl_params = {"id": video_id, "filter": "audioandvideo"}
+            dl_params = {"id": video_id}
 
             async with aiohttp.ClientSession() as s:
                 async with s.get(dl_url, headers=dl_headers, params=dl_params) as r:
-                    if r.status != 200:
-                        raise Exception("Fallback /download failed with non-200")
-                    formats = await r.json()
+                    streams = await r.json()
 
-            best = None
-            for f in formats:
-                if f.get("container") == "mp4" and f.get("hasAudio") and f.get("hasVideo"):
-                    if not best or int(f.get("height", 0)) > int(best.get("height", 0)):
-                        best = f
+            video_only = None
+            audio_only = None
 
-            if not best:
-                raise Exception("No MP4 formats returned by fallback downloader")
+            for s in streams:
+                if s.get("hasVideo") and not s.get("hasAudio"):
+                    if not video_only or int(s.get("height", 0)) > int(video_only.get("height", 0)):
+                        video_only = s
+                if s.get("hasAudio") and not s.get("hasVideo"):
+                    if not audio_only or int(s.get("audioBitrate", 0)) > int(audio_only.get("audioBitrate", 0)):
+                        audio_only = s
 
-            download_url = best.get("url")
+            if not video_only or not audio_only:
+                raise Exception("No separate audio/video streams to merge.")
+
+            # Make merged_url = indicator for merge mode
+            merged_video_url = video_only["url"]
+            merged_audio_url = audio_only["url"]
         else:
-            download_url = mux_download_url
+            merged_video_url = None
+            merged_audio_url = None
 
-        if not download_url:
-            raise Exception("Failed to obtain any workable video URL")
-
+        # ==========================================================
+        # STEP 3 — DOWNLOAD
+        # ==========================================================
         await status.edit("<b>Downloading…</b>")
 
-        # ------------------------------------------------------------
-        #  STEP 3 — Download file
-        # ------------------------------------------------------------
-        fd, temp_path = tempfile.mkstemp(suffix=".mp4")
-        os.close(fd)
+        if merged_url:
+            # 🟢 MUX succeeded → single download
+            fd, temp_path = tempfile.mkstemp(suffix=".mp4")
+            os.close(fd)
 
-        async with aiohttp.ClientSession() as s:
-            async with s.get(download_url, headers={"Range": "bytes=0-"}) as r:
-                if r.status not in (200, 206):
-                    raise Exception(f"Download failed with {r.status}")
-                with open(temp_path, "wb") as f:
-                    f.write(await r.read())
+            async with aiohttp.ClientSession() as s:
+                async with s.get(merged_url, headers={"Range": "bytes=0-"}) as r:
+                    with open(temp_path, "wb") as f:
+                        f.write(await r.read())
 
+            final_path = temp_path
+
+        else:
+            # 🔴 MUX failed → merge manually
+            await status.edit("<b>Merging streams…</b>")
+
+            # temp files
+            fd1, v_path = tempfile.mkstemp(suffix=".mp4")
+            os.close(fd1)
+            fd2, a_path = tempfile.mkstemp(suffix=".m4a")
+            os.close(fd2)
+            fd3, final_path = tempfile.mkstemp(suffix=".mp4")
+            os.close(fd3)
+
+            # download video-only
+            async with aiohttp.ClientSession() as s:
+                async with s.get(merged_video_url) as r:
+                    with open(v_path, "wb") as f:
+                        f.write(await r.read())
+
+            # download audio-only
+            async with aiohttp.ClientSession() as s:
+                async with s.get(merged_audio_url) as r:
+                    with open(a_path, "wb") as f:
+                        f.write(await r.read())
+
+            # merge using ffmpeg
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", v_path,
+                "-i", a_path,
+                "-c:v", "copy",
+                "-c:a", "aac",
+                final_path
+            ]
+            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+            os.remove(v_path)
+            os.remove(a_path)
+
+        # ==========================================================
+        # STEP 4 — Upload  
+        # ==========================================================
         await status.edit("<b>Uploading…</b>")
 
-        # ------------------------------------------------------------
-        #  STEP 4 — Upload to Telegram
-        # ------------------------------------------------------------
         await client.send_video(
             message.chat.id,
-            temp_path,
+            final_path,
             caption=f"🎬 {query}",
             supports_streaming=True
         )
 
         await status.delete()
-        os.remove(temp_path)
+        os.remove(final_path)
 
     except Exception as e:
         await message.reply("❌ Error occurred. Logs sent to admin.")
