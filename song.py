@@ -938,64 +938,33 @@ import json
 import aiohttp
 
 @handler_client.on_message(filters.command("video"))
-async def video_command(client, message):
+async def video_cmd(client, message):
     query = " ".join(message.command[1:])
     if not query:
-        return await message.reply_text("Usage: /video <search query>")
+        return await message.reply_text("Use /video <query>")
 
-    msg = await message.reply_text(f"Searching for: <b>{query}</b>", parse_mode=ParseMode.HTML)
+    msg = await message.reply_text("Searching…")
 
-    # 1) Get first YouTube result using your existing search function
-    try:
-        video_id = await html_youtube_first(query)
-    except Exception as e:
-        return await msg.edit(f"Search failed: <code>{e}</code>", parse_mode=ParseMode.HTML)
-
+    # use your existing search function
+    video_id = await html_youtube_first(query)
     if not video_id:
         return await msg.edit("No results found.")
 
-    await msg.edit(f"Found video ID: <code>{video_id}</code>\nFetching MP4 stream…", parse_mode=ParseMode.HTML)
+    await msg.edit("Uploading…")
 
-    # 2) Fetch get_video_info (no cookies, no login)
-    info_url = f"https://www.youtube.com/get_video_info?html5=1&video_id={video_id}"
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(info_url) as resp:
-                txt = await resp.text()
-    except Exception as e:
-        return await msg.edit(f"Failed to fetch video info: <code>{e}</code>", parse_mode=ParseMode.HTML)
-
-    # 3) Parse player_response JSON
-    try:
-        data = urllib.parse.parse_qs(txt)
-        player = json.loads(data["player_response"][0])
-        formats = player["streamingData"]["formats"]
-    except Exception as e:
-        return await msg.edit(f"Cannot parse video info: <code>{e}</code>", parse_mode=ParseMode.HTML)
-
-    # 4) Find MP4 itag=18 (always available, video+audio)
-    itag18 = next((f for f in formats if f.get("itag") == 18), None)
-
-    if not itag18 or "url" not in itag18:
-        return await msg.edit("MP4 stream not found for this video.")
-
-    mp4_url = itag18["url"]
-
-    # 5) Send video directly (Telegram downloads it)
-    await msg.edit("Uploading video…")
+    backend = "https://sapi-fbeh.onrender.com"   # YOUR backend
+    url = f"{backend}/video?id={video_id}"
 
     try:
         await client.send_video(
             chat_id=message.chat.id,
-            video=mp4_url,
-            caption=f"🎬 <b>Your video</b>\nQuery: {query}",
-            parse_mode=ParseMode.HTML,
+            video=url,
+            caption=f"🎬 {query}\nhttps://youtu.be/{video_id}",
             supports_streaming=True
         )
         await msg.delete()
     except Exception as e:
-        await msg.edit(f"Upload failed: <code>{e}</code>", parse_mode=ParseMode.HTML)
+        await msg.edit(f"Failed: `{e}`")
 
 
 # -------------------------
