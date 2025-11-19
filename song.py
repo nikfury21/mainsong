@@ -943,18 +943,18 @@ async def video_command(client, message):
     if not query:
         return await message.reply_text("Usage: /video <search query>")
 
-    msg = await message.reply_text(f"Searching for: <b>{query}</b>", parse_mode="html")
+    msg = await message.reply_text(f"Searching for: <b>{query}</b>", parse_mode=ParseMode.HTML)
 
     # 1) Get first YouTube result using your existing search function
     try:
         video_id = await html_youtube_first(query)
     except Exception as e:
-        return await msg.edit(f"Search failed: <code>{e}</code>", parse_mode="html")
+        return await msg.edit(f"Search failed: <code>{e}</code>", parse_mode=ParseMode.HTML)
 
     if not video_id:
         return await msg.edit("No results found.")
 
-    await msg.edit(f"Found video ID: <code>{video_id}</code>\nFetching MP4 stream…", parse_mode="html")
+    await msg.edit(f"Found video ID: <code>{video_id}</code>\nFetching MP4 stream…", parse_mode=ParseMode.HTML)
 
     # 2) Fetch get_video_info (no cookies, no login)
     info_url = f"https://www.youtube.com/get_video_info?html5=1&video_id={video_id}"
@@ -964,7 +964,7 @@ async def video_command(client, message):
             async with session.get(info_url) as resp:
                 txt = await resp.text()
     except Exception as e:
-        return await msg.edit(f"Failed to fetch video info: <code>{e}</code>", parse_mode="html")
+        return await msg.edit(f"Failed to fetch video info: <code>{e}</code>", parse_mode=ParseMode.HTML)
 
     # 3) Parse player_response JSON
     try:
@@ -972,7 +972,7 @@ async def video_command(client, message):
         player = json.loads(data["player_response"][0])
         formats = player["streamingData"]["formats"]
     except Exception as e:
-        return await msg.edit(f"Cannot parse video info: <code>{e}</code>", parse_mode="html")
+        return await msg.edit(f"Cannot parse video info: <code>{e}</code>", parse_mode=ParseMode.HTML)
 
     # 4) Find MP4 itag=18 (always available, video+audio)
     itag18 = next((f for f in formats if f.get("itag") == 18), None)
@@ -990,12 +990,12 @@ async def video_command(client, message):
             chat_id=message.chat.id,
             video=mp4_url,
             caption=f"🎬 <b>Your video</b>\nQuery: {query}",
-            parse_mode="html",
+            parse_mode=ParseMode.HTML,
             supports_streaming=True
         )
         await msg.delete()
     except Exception as e:
-        await msg.edit(f"Upload failed: <code>{e}</code>", parse_mode="html")
+        await msg.edit(f"Upload failed: <code>{e}</code>", parse_mode=ParseMode.HTML)
 
 
 # -------------------------
