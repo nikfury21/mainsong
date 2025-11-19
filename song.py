@@ -453,21 +453,33 @@ async def video_command(client: Client, message: Message):
 
     await msg.edit_text("Fetching qualities…")
 
-    url = "https://youtubei.googleapis.com/youtubei/v1/player?key=AIzaSyA-5XoFG8CqFBbrJAHYmg9ZvAP_qBq25ek"
+    api_url = (
+        "https://youtubei.googleapis.com/youtubei/v1/player?"
+        "key=AIzaSyA-aoRHGT8l9cmBVlx9cDlS0W1rM-HI5AY"
+    )
 
     payload = {
         "context": {
             "client": {
-                "clientName": "ANDROID",
-                "clientVersion": "19.08.35"
+                "clientName": "ANDROID_EMBEDDED_PLAYER",
+                "clientVersion": "19.08.35",
+                "androidSdkVersion": 33
             }
         },
         "videoId": vid
     }
 
     async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=payload) as r:
-            data = await r.json()
+        async with session.post(api_url, json=payload) as r:
+            text = await r.text()
+
+            if r.status != 200:
+                return await msg.edit_text("Cannot fetch video qualities.")
+
+            try:
+                data = json.loads(text)
+            except:
+                return await msg.edit_text("Invalid response from YouTube.")
 
     streaming = data.get("streamingData", {})
     formats = streaming.get("formats", []) + streaming.get("adaptiveFormats", [])
@@ -478,7 +490,7 @@ async def video_command(client: Client, message: Message):
             quality_map[f["height"]] = f["itag"]
 
     if not quality_map:
-        return await msg.edit_text("No video qualities available.")
+        return await msg.edit_text("Could not read qualities from YouTube.")
 
     qualities = sorted(quality_map.keys())
     title = data.get("videoDetails", {}).get("title", "Video")
@@ -487,10 +499,9 @@ async def video_command(client: Client, message: Message):
 
     rows = []
     row = []
-    for q in qualities:
-        cb = f"vdsel|{vid}|{quality_map[q]}|{q}"
-        row.append(InlineKeyboardButton(f"{q}p", callback_data=cb))
 
+    for q in qualities:
+        row.append(InlineKeyboardButton(f"{q}p", callback_data=f"vdsel|{vid}|{quality_map[q]}|{q}"))
         if len(row) == 3:
             rows.append(row)
             row = []
