@@ -492,7 +492,7 @@ async def videodebug(client, message):
 # ============================================================
 @handler_client.on_message(filters.command("video"))
 async def video_command(client: Client, message: Message):
-    import yt_dlp, tempfile, os, traceback
+    import aiohttp, tempfile, os, traceback
     from pyrogram.enums import ParseMode
 
     ADMIN = 8353079084
@@ -504,40 +504,68 @@ async def video_command(client: Client, message: Message):
     status = await message.reply("<b>Searching…</b>", parse_mode=ParseMode.HTML)
 
     try:
-        # STEP 1 — Use yt-dlp's built-in search
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "format": "mp4[height<=720]/mp4/best",
-            "outtmpl": "%(id)s.%(ext)s",
+        # STEP 1 — YouTube search
+        video_id = await html_youtube_first(query)
+        if not video_id:
+            return await status.edit("❌ No YouTube results found.", parse_mode=ParseMode.HTML)
+
+        await status.edit("<b>Fetching MP4 link…</b>", parse_mode=ParseMode.HTML)
+
+        # STEP 2 — Use the SAME API as videodebug (API B)
+        url = "https://ytstream-download-youtube-videos.p.rapidapi.com/dl"
+        headers = {
+            "X-RapidAPI-Key": RAPIDAPI_KEY,
+            "X-RapidAPI-Host": "ytstream-download-youtube-videos.p.rapidapi.com",
         }
+        params = {"id": video_id}
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"ytsearch1:{query}", download=False)
-            if "entries" in info:
-                info = info["entries"][0]
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, headers=headers, params=params) as r:
+                if r.status != 200:
+                    raise Exception(f"API error: {r.status}")
+                data = await r.json()
 
-            video_id = info["id"]
+        # STEP 3 — Extract MP4 list
+        mp4_list = data.get("adaptiveFormats", []) + data.get("formats", [])
+
+        mp4_url = None
+
+        # Prefer 720p (itag 22)
+        for f in mp4_list:
+            if str(f.get("itag")) == "22":
+                mp4_url = f.get("url")
+                break
+
+        # fallback → 360p (itag 18)
+        if not mp4_url:
+            for f in mp4_list:
+                if str(f.get("itag")) == "18":
+                    mp4_url = f.get("url")
+                    break
+
+        if not mp4_url:
+            raise Exception("No usable MP4 link found.")
 
         await status.edit("<b>Downloading…</b>", parse_mode=ParseMode.HTML)
 
-        # STEP 2 — Download MP4
+        # STEP 4 — Download bytes
+        async with aiohttp.ClientSession() as session:
+            async with session.get(mp4_url) as resp:
+                if resp.status != 200:
+                    raise Exception("MP4 download failed.")
+                video_bytes = await resp.read()
+
+        if len(video_bytes) < 300_000:
+            raise Exception("Invalid or empty file")
+
+        # SAVE TEMP FILE
         fd, temp_path = tempfile.mkstemp(suffix=".mp4")
         os.close(fd)
-
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "format": "mp4[height<=720]/mp4/best",
-            "outtmpl": temp_path,
-        }
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
+        with open(temp_path, "wb") as f:
+            f.write(video_bytes)
 
         await status.edit("<b>Uploading…</b>", parse_mode=ParseMode.HTML)
 
-        # STEP 3 — Send to Telegram
         await client.send_video(
             message.chat.id,
             temp_path,
@@ -556,6 +584,7 @@ async def video_command(client: Client, message: Message):
             f"⚠ ERROR IN /video\n\nQuery: {query}\nChat: {message.chat.id}\n\n<code>{full}</code>",
             parse_mode=ParseMode.HTML
         )
+
 
 
 
