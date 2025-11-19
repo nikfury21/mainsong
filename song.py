@@ -504,14 +504,14 @@ async def video_command(client: Client, message: Message):
     status = await message.reply("<b>Searching…</b>", parse_mode=ParseMode.HTML)
 
     try:
-        # STEP 1 — YouTube search
+        # STEP 1 — Search YouTube
         video_id = await html_youtube_first(query)
         if not video_id:
             return await status.edit("❌ No YouTube results found.", parse_mode=ParseMode.HTML)
 
         await status.edit("<b>Fetching MP4 link…</b>", parse_mode=ParseMode.HTML)
 
-        # STEP 2 — API B (same as videodebug)
+        # STEP 2 — Fetch from API B
         url = "https://ytstream-download-youtube-videos.p.rapidapi.com/dl"
         headers = {
             "X-RapidAPI-Key": RAPIDAPI_KEY,
@@ -521,52 +521,34 @@ async def video_command(client: Client, message: Message):
 
         async with aiohttp.ClientSession() as s:
             async with s.get(url, headers=headers, params=params) as r:
-                if r.status != 200:
-                    raise Exception(f"API error: {r.status}")
                 data = await r.json()
 
-        # STEP 3 — Extract list of mp4 formats
-        mp4_list = data.get("adaptiveFormats", []) + data.get("formats", [])
-
+        # STEP 3 — Use ONLY the 'link' field (proxy decrypted URLs)
+        links = data.get("link", [])
         mp4_url = None
 
-        # Prefer itag 22 → 720p
-        for f in mp4_list:
-            if str(f.get("itag")) == "22":
-                mp4_url = f.get("url")
+        # first prefer best quality mp4
+        for item in links:
+            if item.get("type") == "mp4":
+                mp4_url = item.get("url")
                 break
 
-        # fallback → itag 18 → 360p
         if not mp4_url:
-            for f in mp4_list:
-                if str(f.get("itag")) == "18":
-                    mp4_url = f.get("url")
-                    break
-
-        if not mp4_url:
-            raise Exception("No usable MP4 link found.")
+            raise Exception("No MP4 link found in 'link' field.")
 
         await status.edit("<b>Downloading…</b>", parse_mode=ParseMode.HTML)
 
-        # STEP 4 — Download with browser headers (fixes blocked videos)
-        download_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept": "*/*",
-            "Connection": "keep-alive",
-            "Referer": "https://www.youtube.com/",
-        }
-
-        async with aiohttp.ClientSession() as session:
-            async with session.get(mp4_url, headers=download_headers) as resp:
-                if resp.status != 200:
-                    raise Exception(f"MP4 download failed with HTTP {resp.status}.")
-                video_bytes = await resp.read()
+        # STEP 4 — Download
+        async with aiohttp.ClientSession() as s:
+            async with s.get(mp4_url) as r:
+                if r.status != 200:
+                    raise Exception(f"MP4 download failed with HTTP {r.status}.")
+                video_bytes = await r.read()
 
         if len(video_bytes) < 300_000:
-            raise Exception("Invalid or empty file")
+            raise Exception("Received empty or invalid MP4 file.")
 
-        # SAVE TEMP MP4 FILE
+        # STEP 5 — Save temporary file
         fd, temp_path = tempfile.mkstemp(suffix=".mp4")
         os.close(fd)
         with open(temp_path, "wb") as f:
