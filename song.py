@@ -504,51 +504,51 @@ async def video_command(client: Client, message: Message):
     status = await message.reply("<b>Searching…</b>", parse_mode=ParseMode.HTML)
 
     try:
-        # STEP 1 — Search YouTube
+        # STEP 1 — YouTube search
         video_id = await html_youtube_first(query)
         if not video_id:
             return await status.edit("❌ No YouTube results found.", parse_mode=ParseMode.HTML)
 
-        await status.edit("<b>Fetching MP4 link…</b>", parse_mode=ParseMode.HTML)
+        await status.edit("<b>Fetching merged MP4…</b>", parse_mode=ParseMode.HTML)
 
-        # STEP 2 — Fetch from API B
-        url = "https://ytstream-download-youtube-videos.p.rapidapi.com/dl"
+        # STEP 2 — /mux endpoint
+        url = "https://cloud-api-hub-youtube-downloader.p.rapidapi.com/mux"
         headers = {
-            "X-RapidAPI-Key": RAPIDAPI_KEY,
-            "X-RapidAPI-Host": "ytstream-download-youtube-videos.p.rapidapi.com",
+            "x-rapidapi-host": "cloud-api-hub-youtube-downloader.p.rapidapi.com",
+            "x-rapidapi-key": RAPID2,    # ENV variable
         }
-        params = {"id": video_id}
+
+        # Request 720p H264 merged file
+        params = {
+            "id": video_id,
+            "quality": "720",    # recommended for phones
+            "codec": "h264",     # safest playback on Telegram
+        }
 
         async with aiohttp.ClientSession() as s:
             async with s.get(url, headers=headers, params=params) as r:
-                data = await r.json()
-
-        # STEP 3 — Use ONLY the 'link' field (proxy decrypted URLs)
-        links = data.get("link", [])
-        mp4_url = None
-
-        # first prefer best quality mp4
-        for item in links:
-            if item.get("type") == "mp4":
-                mp4_url = item.get("url")
-                break
-
-        if not mp4_url:
-            raise Exception("No MP4 link found in 'link' field.")
-
-        await status.edit("<b>Downloading…</b>", parse_mode=ParseMode.HTML)
-
-        # STEP 4 — Download
-        async with aiohttp.ClientSession() as s:
-            async with s.get(mp4_url) as r:
                 if r.status != 200:
-                    raise Exception(f"MP4 download failed with HTTP {r.status}.")
-                video_bytes = await r.read()
+                    raise Exception(f"API error {r.status}")
+                mux_data = await r.json()
+
+        if "url" not in mux_data:
+            raise Exception("MUX returned no URL")
+
+        download_url = mux_data["url"]
+
+        await status.edit("<b>Downloading final MP4…</b>", parse_mode=ParseMode.HTML)
+
+        # STEP 3 — Download the merged MP4 from tunnel link
+        async with aiohttp.ClientSession() as session:
+            async with session.get(download_url) as resp:
+                if resp.status != 200:
+                    raise Exception("Final MP4 download failed.")
+                video_bytes = await resp.read()
 
         if len(video_bytes) < 300_000:
-            raise Exception("Received empty or invalid MP4 file.")
+            raise Exception("Invalid/empty video file.")
 
-        # STEP 5 — Save temporary file
+        # Save temp file
         fd, temp_path = tempfile.mkstemp(suffix=".mp4")
         os.close(fd)
         with open(temp_path, "wb") as f:
@@ -558,9 +558,9 @@ async def video_command(client: Client, message: Message):
 
         await client.send_video(
             message.chat.id,
-            temp_path,
+            video=temp_path,
             caption=f"🎬 {query}",
-            supports_streaming=True
+            supports_streaming=True,
         )
 
         await status.delete()
@@ -574,7 +574,6 @@ async def video_command(client: Client, message: Message):
             f"⚠ ERROR IN /video\n\nQuery: {query}\nChat: {message.chat.id}\n\n<code>{full}</code>",
             parse_mode=ParseMode.HTML
         )
-
 
 
 @handler_client.on_message(filters.command("play"))
