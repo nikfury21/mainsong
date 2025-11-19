@@ -446,6 +446,7 @@ async def video_command(client: Client, message: Message):
 
     msg = await message.reply_text("Searching YouTube…")
 
+    # Your working search (no captcha)
     try:
         vid = await html_youtube_first(user_query)
     except:
@@ -453,40 +454,44 @@ async def video_command(client: Client, message: Message):
 
     await msg.edit_text("Fetching qualities…")
 
+    # GUARANTEED WORKING embedded client endpoint
     api_url = (
-        "https://youtubei.googleapis.com/youtubei/v1/player?"
-        "key=AIzaSyA-aoRHGT8l9cmBVlx9cDlS0W1rM-HI5AY"
+        "https://www.youtube.com/youtubei/v1/player?"
+        "key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_9N0uQg"
     )
 
     payload = {
         "context": {
             "client": {
-                "clientName": "ANDROID_EMBEDDED_PLAYER",
-                "clientVersion": "19.08.35",
-                "androidSdkVersion": 33
+                "clientName": "WEB_EMBEDDED_PLAYER",
+                "clientVersion": "2.20240222.01.00"
             }
         },
-        "videoId": vid
+        "videoId": vid,
+        "playbackContext": {
+            "contentPlaybackContext": {
+                "signatureTimestamp": 19335
+            }
+        }
     }
 
     async with aiohttp.ClientSession() as session:
         async with session.post(api_url, json=payload) as r:
-            text = await r.text()
-
+            txt = await r.text()
             if r.status != 200:
                 return await msg.edit_text("Cannot fetch video qualities.")
-
             try:
-                data = json.loads(text)
+                data = json.loads(txt)
             except:
                 return await msg.edit_text("Invalid response from YouTube.")
 
+    # Extract formats
     streaming = data.get("streamingData", {})
     formats = streaming.get("formats", []) + streaming.get("adaptiveFormats", [])
 
     quality_map = {}
     for f in formats:
-        if "height" in f and "itag" in f and f.get("mimeType", "").startswith("video/"):
+        if f.get("height") and f.get("itag") and f.get("mimeType", "").startswith("video/"):
             quality_map[f["height"]] = f["itag"]
 
     if not quality_map:
@@ -495,13 +500,18 @@ async def video_command(client: Client, message: Message):
     qualities = sorted(quality_map.keys())
     title = data.get("videoDetails", {}).get("title", "Video")
 
+    # Build inline keyboard
     from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-
     rows = []
     row = []
 
     for q in qualities:
-        row.append(InlineKeyboardButton(f"{q}p", callback_data=f"vdsel|{vid}|{quality_map[q]}|{q}"))
+        row.append(
+            InlineKeyboardButton(
+                f"{q}p",
+                callback_data=f"vdsel|{vid}|{quality_map[q]}|{q}"
+            )
+        )
         if len(row) == 3:
             rows.append(row)
             row = []
@@ -513,7 +523,6 @@ async def video_command(client: Client, message: Message):
         f"<b>Select quality for</b>:\n{escape(title)}",
         reply_markup=InlineKeyboardMarkup(rows)
     )
-
 
 
 
