@@ -498,95 +498,104 @@ async def videodebug(client, message):
 # ============================================================
 @handler_client.on_message(filters.command("video"))
 async def video_command(client: Client, message: Message):
-    import aiohttp, tempfile, os, traceback, re
+    import aiohttp, os, tempfile, traceback
     from pyrogram.enums import ParseMode
 
     ADMIN = 8353079084
-
-    # Parse: "/video query quality"
-    parts = message.text.split(" ", 2)
-
-    if len(parts) < 2:
-        return await message.reply("Usage: /video <query> [quality]")
-
-    # Extract query + optional quality
-    raw = parts[1:]
-    text = " ".join(raw)
-
-    m = re.match(r"(.+?)\s+(\d{3,4}|max)$", text)
-    if m:
-        query = m.group(1).strip()
-        quality_req = m.group(2).strip()     # e.g. 720 / 1080 / 360 / max
-    else:
-        query = text.strip()
-        quality_req = "max"                  # default
+    query = " ".join(message.command[1:]).strip()
+    if not query:
+        return await message.reply("Usage: /video <query>")
 
     status = await message.reply("<b>Searching…</b>", parse_mode=ParseMode.HTML)
 
     try:
-        #-------------------------------------------#
-        # STEP 1 → Get YouTube videoId
-        #-------------------------------------------#
+        # STEP 1 — Get YouTube video ID
         video_id = await html_youtube_first(query)
         if not video_id:
-            return await status.edit("❌ No results found.")
+            return await status.edit("❌ No YouTube results found.")
 
         await status.edit("<b>Preparing video…</b>")
 
-        #-------------------------------------------#
-        # STEP 2 → MUX API (always returns MP4)
-        #-------------------------------------------#
-        url = "https://cloud-api-hub-youtube-downloader.p.rapidapi.com/mux"
-
-        headers = {
-            "x-rapidapi-key": RAPID2,
+        # ------------------------------------------------------------
+        #  STEP 2 — TRY MUX (highest quality merged audio+video)
+        # ------------------------------------------------------------
+        mux_url = "https://cloud-api-hub-youtube-downloader.p.rapidapi.com/mux"
+        mux_headers = {
             "x-rapidapi-host": "cloud-api-hub-youtube-downloader.p.rapidapi.com",
+            "x-rapidapi-key": RAPID2,
         }
+        mux_params = {"id": video_id, "quality": "max", "codec": "h264"}
 
-        params = {
-            "id": video_id,
-            "quality": quality_req,    # user-selected
-            "codec": "h264",           # best Telegram compatibility
-            "audioFormat": "best"
-        }
+        mux_download_url = None
 
         async with aiohttp.ClientSession() as s:
-            async with s.get(url, headers=headers, params=params) as r:
+            async with s.get(mux_url, headers=mux_headers, params=mux_params) as r:
+                # rate limit / failure → fallback
                 if r.status != 200:
-                    raise Exception(f"MUX API error {r.status}")
-                data = await r.json()
+                    mux_download_url = None
+                else:
+                    mx = await r.json()
+                    mux_download_url = mx.get("url")
 
-        if "url" not in data:
-            raise Exception("MUX API did not return download URL")
+        # ------------------------------------------------------------
+        #  IF MUX FAILED → FALLBACK TO /download (works for all vids)
+        # ------------------------------------------------------------
+        if not mux_download_url:
+            await status.edit("<b>Mux failed. Using fallback…</b>")
 
-        download_url = data["url"]
-        filename = data.get("filename", "video.mp4")
+            dl_url = "https://cloud-api-hub-youtube-downloader.p.rapidapi.com/download"
+            dl_headers = {
+                "x-rapidapi-host": "cloud-api-hub-youtube-downloader.p.rapidapi.com",
+                "x-rapidapi-key": RAPID2,
+            }
+            dl_params = {"id": video_id, "filter": "audioandvideo"}
 
-        await status.edit("<b>Downloading MP4…</b>")
+            async with aiohttp.ClientSession() as s:
+                async with s.get(dl_url, headers=dl_headers, params=dl_params) as r:
+                    if r.status != 200:
+                        raise Exception("Fallback /download failed with non-200")
+                    formats = await r.json()
 
-        #-------------------------------------------#
-        # STEP 3 → Download MP4 bytes
-        #-------------------------------------------#
+            best = None
+            for f in formats:
+                if f.get("container") == "mp4" and f.get("hasAudio") and f.get("hasVideo"):
+                    if not best or int(f.get("height", 0)) > int(best.get("height", 0)):
+                        best = f
+
+            if not best:
+                raise Exception("No MP4 formats returned by fallback downloader")
+
+            download_url = best.get("url")
+        else:
+            download_url = mux_download_url
+
+        if not download_url:
+            raise Exception("Failed to obtain any workable video URL")
+
+        await status.edit("<b>Downloading…</b>")
+
+        # ------------------------------------------------------------
+        #  STEP 3 — Download file
+        # ------------------------------------------------------------
         fd, temp_path = tempfile.mkstemp(suffix=".mp4")
         os.close(fd)
 
         async with aiohttp.ClientSession() as s:
-            async with s.get(download_url) as resp:
-                if resp.status != 200:
-                    raise Exception("Download failed")
+            async with s.get(download_url, headers={"Range": "bytes=0-"}) as r:
+                if r.status not in (200, 206):
+                    raise Exception(f"Download failed with {r.status}")
                 with open(temp_path, "wb") as f:
-                    f.write(await resp.read())
+                    f.write(await r.read())
 
-        #-------------------------------------------#
-        # STEP 4 → Upload
-        #-------------------------------------------#
         await status.edit("<b>Uploading…</b>")
 
+        # ------------------------------------------------------------
+        #  STEP 4 — Upload to Telegram
+        # ------------------------------------------------------------
         await client.send_video(
             message.chat.id,
-            video=temp_path,
-            caption=f"🎬 <b>{query}</b>\n📌 Quality: <code>{quality_req}</code>",
-            parse_mode=ParseMode.HTML,
+            temp_path,
+            caption=f"🎬 {query}",
             supports_streaming=True
         )
 
@@ -598,9 +607,10 @@ async def video_command(client: Client, message: Message):
         full = "".join(traceback.format_exception(type(e), e, e.__traceback__))
         await client.send_message(
             ADMIN,
-            f"⚠ ERROR IN /video\n\nQuery: {query}\nQuality: {quality_req}\nChat: {message.chat.id}\n\n<code>{full}</code>",
+            f"⚠ ERROR IN /video\n\nQuery: {query}\nQuality: max\nChat: {message.chat.id}\n\n<code>{full}</code>",
             parse_mode=ParseMode.HTML
         )
+
 
 
 
