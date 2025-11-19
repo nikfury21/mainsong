@@ -513,7 +513,20 @@ async def video_command(client: Client, message: Message):
         await status.edit("<b>Preparing high-quality MP4…</b>", parse_mode=ParseMode.HTML)
 
         # We will try qualities in order: max → 2160 → 1440 → 1080 → 720
-        qualities = ["max", "2160", "1440", "1080", "720"]
+        qualities = [
+            "max",
+            "2160",
+            "1440",
+            "1080",
+            "720",
+            "560",   # many reaction videos
+            "540",   # common YouTube non-HD resolution
+            "480",
+            "480p",
+            "360",
+            "low"
+        ]
+
 
         mux_url = None
         mux_filename = None
