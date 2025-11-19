@@ -498,166 +498,62 @@ async def videodebug(client, message):
 # ============================================================
 @handler_client.on_message(filters.command("video"))
 async def video_command(client: Client, message: Message):
-    import aiohttp, os, tempfile, subprocess, traceback
+    import asyncio, tempfile, os, traceback
     from pyrogram.enums import ParseMode
+    from yt_dlp import YoutubeDL
 
     ADMIN = 8353079084
     query = " ".join(message.command[1:]).strip()
+    COOKIES = "cookies.txt"   # Netscape format
+
     if not query:
         return await message.reply("Usage: /video <query>")
 
     status = await message.reply("<b>Searching…</b>", parse_mode=ParseMode.HTML)
 
     try:
-        # STEP 1 → YouTube search
+        # STEP 1 — find the first YouTube result
         video_id = await html_youtube_first(query)
         if not video_id:
-            return await status.edit("❌ No YouTube results found.")
+            return await status.edit("❌ No result found.", parse_mode=ParseMode.HTML)
 
-        await status.edit("<b>Preparing video…</b>")
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        await status.edit("<b>Downloading…</b>", parse_mode=ParseMode.HTML)
 
-        # ==========================================================
-        # TRY 1 — MUX (highest quality)
-        # ==========================================================
-        mux_url = "https://cloud-api-hub-youtube-downloader.p.rapidapi.com/mux"
-        mux_headers = {
-            "x-rapidapi-host": "cloud-api-hub-youtube-downloader.p.rapidapi.com",
-            "x-rapidapi-key": RAPID2,
+        # STEP 2 — yt-dlp settings
+        ydl_opts = {
+            "outtmpl": "video.%(ext)s",
+            "format": "bestvideo+bestaudio/best",
+            "merge_output_format": "mp4",
+            "cookies": COOKIES,
+            "quiet": True,
+            "no_warnings": True,
         }
-        mux_params = {"id": video_id, "quality": "max", "codec": "h264"}
 
-        merged_url = None
-        async with aiohttp.ClientSession() as s:
-            async with s.get(mux_url, headers=mux_headers, params=mux_params) as r:
-                if r.status == 200:
-                    j = await r.json()
-                    merged_url = j.get("url")
+        # STEP 3 — download video
+        with YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            file_path = ydl.prepare_filename(info).replace(".webm", ".mp4")
 
-        # ==========================================================
-        # TRY 2 — Stable fallback (YouTube Media Downloader)
-        # ==========================================================
-        if not merged_url:
-            await status.edit("Mux failed… falling back…")
-        
-            dl_url = "https://youtube-media-downloader.p.rapidapi.com/v2/video/details"
-            dl_headers = {
-                "x-rapidapi-host": "youtube-media-downloader.p.rapidapi.com",
-                "x-rapidapi-key": RAPID2,
-            }
-            dl_params = {"videoId": video_id}
-        
-            async with aiohttp.ClientSession() as s:
-                async with s.get(dl_url, headers=dl_headers, params=dl_params) as r:
-                    j = await r.json()
-        
-            # Extract streams
-            formats = j.get("videos", [])
-            audios = j.get("audios", [])
-        
-            video_only = max([f for f in formats if f.get("quality")], key=lambda x: x.get("qualityValue", 0), default=None)
-            audio_only = max(audios, key=lambda x: x.get("bitrate", 0), default=None)
-        
-            if not video_only or not audio_only:
-                raise Exception("No audio/video streams found in fallback provider")
-
-
-            video_only = None
-            audio_only = None
-
-            for s in streams:
-                if s.get("hasVideo") and not s.get("hasAudio"):
-                    if not video_only or int(s.get("height", 0)) > int(video_only.get("height", 0)):
-                        video_only = s
-                if s.get("hasAudio") and not s.get("hasVideo"):
-                    if not audio_only or int(s.get("audioBitrate", 0)) > int(audio_only.get("audioBitrate", 0)):
-                        audio_only = s
-
-            if not video_only or not audio_only:
-                raise Exception("No separate audio/video streams to merge.")
-
-            # Make merged_url = indicator for merge mode
-            merged_video_url = video_only["url"]
-            merged_audio_url = audio_only["url"]
-        else:
-            merged_video_url = None
-            merged_audio_url = None
-
-        # ==========================================================
-        # STEP 3 — DOWNLOAD
-        # ==========================================================
-        await status.edit("<b>Downloading…</b>")
-
-        if merged_url:
-            # 🟢 MUX succeeded → single download
-            fd, temp_path = tempfile.mkstemp(suffix=".mp4")
-            os.close(fd)
-
-            async with aiohttp.ClientSession() as s:
-                async with s.get(merged_url, headers={"Range": "bytes=0-"}) as r:
-                    with open(temp_path, "wb") as f:
-                        f.write(await r.read())
-
-            final_path = temp_path
-
-        else:
-            # 🔴 MUX failed → merge manually
-            await status.edit("<b>Merging streams…</b>")
-
-            # temp files
-            fd1, v_path = tempfile.mkstemp(suffix=".mp4")
-            os.close(fd1)
-            fd2, a_path = tempfile.mkstemp(suffix=".m4a")
-            os.close(fd2)
-            fd3, final_path = tempfile.mkstemp(suffix=".mp4")
-            os.close(fd3)
-
-            # download video-only
-            async with aiohttp.ClientSession() as s:
-                async with s.get(merged_video_url) as r:
-                    with open(v_path, "wb") as f:
-                        f.write(await r.read())
-
-            # download audio-only
-            async with aiohttp.ClientSession() as s:
-                async with s.get(merged_audio_url) as r:
-                    with open(a_path, "wb") as f:
-                        f.write(await r.read())
-
-            # merge using ffmpeg
-            cmd = [
-                "ffmpeg", "-y",
-                "-i", v_path,
-                "-i", a_path,
-                "-c:v", "copy",
-                "-c:a", "aac",
-                final_path
-            ]
-            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-            os.remove(v_path)
-            os.remove(a_path)
-
-        # ==========================================================
-        # STEP 4 — Upload  
-        # ==========================================================
-        await status.edit("<b>Uploading…</b>")
+        # STEP 4 — upload
+        await status.edit("<b>Uploading…</b>", parse_mode=ParseMode.HTML)
 
         await client.send_video(
             message.chat.id,
-            final_path,
-            caption=f"🎬 {query}",
+            file_path,
+            caption=f"🎬 {info.get('title')}",
             supports_streaming=True
         )
 
         await status.delete()
-        os.remove(final_path)
+        os.remove(file_path)
 
     except Exception as e:
-        await message.reply("❌ Error occurred. Logs sent to admin.")
+        await message.reply("❌ Error occurred. Logs sent.")
         full = "".join(traceback.format_exception(type(e), e, e.__traceback__))
         await client.send_message(
             ADMIN,
-            f"⚠ ERROR IN /video\n\nQuery: {query}\nQuality: max\nChat: {message.chat.id}\n\n<code>{full}</code>",
+            f"⚠ ERROR IN /video\n\nQuery: {query}\n\n<code>{full}</code>",
             parse_mode=ParseMode.HTML
         )
 
