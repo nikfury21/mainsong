@@ -933,86 +933,69 @@ async def callback_handler(client, cq: CallbackQuery):
     else:
         await cq.answer()
 
-from pyrogram.enums import ParseMode
+import urllib.parse
+import json
+import aiohttp
 
 @handler_client.on_message(filters.command("video"))
 async def video_command(client, message):
-    import aiohttp, urllib.parse, json
-
-    query = " ".join(message.command[1:]).strip()
+    query = " ".join(message.command[1:])
     if not query:
-        return await message.reply_text("<b>Usage:</b> /video &lt;search query&gt;", parse_mode=ParseMode.HTML)
+        return await message.reply_text("Usage: /video <search query>")
 
-    msg = await message.reply_text(
-        "<b><u>Processing Request</u></b><br><br>• Step 1/4: Searching…",
-        parse_mode=ParseMode.HTML
-    )
+    msg = await message.reply_text(f"Searching for: <b>{query}</b>", parse_mode="html")
 
-    # Step 1 — get YouTube video ID using your existing function
+    # 1) Get first YouTube result using your existing search function
     try:
         video_id = await html_youtube_first(query)
     except Exception as e:
-        return await msg.edit(f"❌ <b>Search failed:</b> <code>{e}</code>", parse_mode=ParseMode.HTML)
+        return await msg.edit(f"Search failed: <code>{e}</code>", parse_mode="html")
 
     if not video_id:
-        return await msg.edit("❌ <b>No results found.</b>", parse_mode=ParseMode.HTML)
+        return await msg.edit("No results found.")
 
-    await msg.edit(
-        "<b><u>Processing Request</u></b><br><br>• Step 2/4: Fetching video info…",
-        parse_mode=ParseMode.HTML
-    )
+    await msg.edit(f"Found video ID: <code>{video_id}</code>\nFetching MP4 stream…", parse_mode="html")
 
-    # Step 2 — get_video_info (cookie-free)
-    info_url = (
-        f"https://www.youtube.com/get_video_info"
-        f"?video_id={video_id}&html5=1&eurl=https://youtube.googleapis.com/v/{video_id}"
-    )
+    # 2) Fetch get_video_info (no cookies, no login)
+    info_url = f"https://www.youtube.com/get_video_info?html5=1&video_id={video_id}"
 
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(info_url) as resp:
-                raw = await resp.text()
+                txt = await resp.text()
     except Exception as e:
-        return await msg.edit(f"❌ <b>Failed to fetch:</b> <code>{e}</code>", parse_mode=ParseMode.HTML)
+        return await msg.edit(f"Failed to fetch video info: <code>{e}</code>", parse_mode="html")
 
-    # Step 3 — parse JSON
+    # 3) Parse player_response JSON
     try:
-        data = urllib.parse.parse_qs(raw)
+        data = urllib.parse.parse_qs(txt)
         player = json.loads(data["player_response"][0])
         formats = player["streamingData"]["formats"]
-    except Exception:
-        return await msg.edit(
-            "❌ <b>Cannot parse video info</b> (blocked, restricted, or unavailable).",
-            parse_mode=ParseMode.HTML
-        )
+    except Exception as e:
+        return await msg.edit(f"Cannot parse video info: <code>{e}</code>", parse_mode="html")
 
-    # Search for MP4 itag=18
-    stream = next((f for f in formats if f.get("itag") == 18), None)
+    # 4) Find MP4 itag=18 (always available, video+audio)
+    itag18 = next((f for f in formats if f.get("itag") == 18), None)
 
-    if not stream or "url" not in stream:
-        return await msg.edit("❌ <b>No MP4 stream available.</b>", parse_mode=ParseMode.HTML)
+    if not itag18 or "url" not in itag18:
+        return await msg.edit("MP4 stream not found for this video.")
 
-    mp4_url = stream["url"]
-    thumb = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+    mp4_url = itag18["url"]
 
-    await msg.edit(
-        "<b><u>Processing Request</u></b><br><br>• Step 3/4: Uploading…",
-        parse_mode=ParseMode.HTML
-    )
+    # 5) Send video directly (Telegram downloads it)
+    await msg.edit("Uploading video…")
 
-    # Step 4 — send video
     try:
         await client.send_video(
             chat_id=message.chat.id,
             video=mp4_url,
-            caption=f"🎬 <b>{query}</b><br>https://youtu.be/{video_id}",
-            parse_mode=ParseMode.HTML,
-            supports_streaming=True,
-            thumb=thumb
+            caption=f"🎬 <b>Your video</b>\nQuery: {query}",
+            parse_mode="html",
+            supports_streaming=True
         )
         await msg.delete()
     except Exception as e:
-        await msg.edit(f"❌ <b>Upload failed:</b> <code>{e}</code>", parse_mode=ParseMode.HTML)
+        await msg.edit(f"Upload failed: <code>{e}</code>", parse_mode="html")
 
 
 # -------------------------
