@@ -108,6 +108,147 @@ import tempfile
 import os
 from functools import partial
 
+# --- /video command: download and send first YouTube MP4 result (no cookies/login) ---
+import concurrent.futures
+import shutil
+
+MAX_TELEGRAM_FILESIZE = 2 * 1024 * 1024 * 1024  # 2 GB safe default (adjust if your userbot allows more)
+
+def ytdlp_download_mp4(video_id: str, out_dir: str):
+    """
+    Blocking function: use yt_dlp to download the video as an MP4 into out_dir.
+    Returns dict: {"filepath": ..., "title": ..., "duration": seconds, "thumb": path_or_None}
+    """
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "outtmpl": os.path.join(out_dir, "%(title)s.%(ext)s"),
+        "noplaylist": True,
+        "merge_output_format": "mp4",
+        # try to avoid cookies/login
+        "nocheckcertificate": True,
+        "cookiefile": None,
+        # avoid postprocessors that need external tools if possible
+        "postprocessors": [],
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        info = ydl.extract_info(url, download=True)
+        # If extract_info returns the entry
+        # find the file on disk
+        filename = ydl.prepare_filename(info)
+        # ensure mp4 extension (merge_output_format used)
+        if not filename.lower().endswith(".mp4"):
+            filename = os.path.splitext(filename)[0] + ".mp4"
+
+        title = info.get("title") or video_id
+        duration = iso8601_to_seconds(info.get("duration_iso", None)) if info.get("duration_iso") else int(info.get("duration") or 0)
+        # try common fields for duration if available
+        try:
+            duration = int(info.get("duration", duration))
+        except:
+            pass
+
+        # attempt to download thumbnail to out_dir
+        thumb_path = None
+        thumb_url = info.get("thumbnail") or f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+        try:
+            import urllib.request
+            thumb_path = os.path.join(out_dir, "thumb.jpg")
+            urllib.request.urlretrieve(thumb_url, thumb_path)
+        except Exception:
+            thumb_path = None
+
+        return {"filepath": filename, "title": title, "duration": duration, "thumb": thumb_path}
+
+@handler_client.on_message(filters.command("video"))
+async def video_command(client: Client, message: Message):
+    """Usage: /video <query> — finds first YouTube result and sends MP4 (no cookies/login)."""
+    query = " ".join(message.command[1:]).strip()
+    if not query:
+        await message.reply_text("Please provide a search query, e.g. /video never gonna give you up")
+        return
+
+    progress = await message.reply_text(f"🔎 Searching YouTube for: <b>{query}</b>", parse_mode=ParseMode.HTML)
+
+    # 1) find the first recommended video id (uses html_youtube_first already in file)
+    try:
+        vid = await html_youtube_first(query)
+    except Exception as e:
+        await progress.edit_text(f"❌ Search failed: <code>{e}</code>", parse_mode=ParseMode.HTML)
+        return
+
+    if not vid:
+        await progress.edit_text("❌ No YouTube results found.")
+        return
+
+    await progress.edit_text(f"⬇️ Found video: <code>{vid}</code>\nStarting download...", parse_mode=ParseMode.HTML)
+
+    # 2) create a temp dir and run blocking yt_dlp inside executor
+    tmpdir = tempfile.mkdtemp(prefix="tg_video_")
+    loop = asyncio.get_event_loop()
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            fut = loop.run_in_executor(pool, partial(ytdlp_download_mp4, vid, tmpdir))
+            # Basic timeout guard (optional) - can be adjusted or removed
+            try:
+                result = await asyncio.wait_for(fut, timeout=900)  # 15 minutes hard cap
+            except asyncio.TimeoutError:
+                await progress.edit_text("❌ Download timed out (took too long).", parse_mode=ParseMode.HTML)
+                return
+
+        filepath = result.get("filepath")
+        title = result.get("title") or query
+        duration = result.get("duration") or 0
+        thumb_path = result.get("thumb")
+
+        # if the downloader returned a non-absolute path, join with tmpdir
+        if filepath and not os.path.isabs(filepath):
+            filepath = os.path.join(tmpdir, filepath)
+
+        if not filepath or not os.path.exists(filepath):
+            await progress.edit_text("❌ Download failed: file not found after yt_dlp run.", parse_mode=ParseMode.HTML)
+            return
+
+        # File size check (Telegram limits). If it's bigger than MAX_TELEGRAM_FILESIZE, fail gracefully.
+        size = os.path.getsize(filepath)
+        if size > MAX_TELEGRAM_FILESIZE:
+            await progress.edit_text(
+                f"❌ Download completed but file is too large to upload to Telegram ({size / (1024**3):.2f} GB).",
+                parse_mode=ParseMode.HTML
+            )
+            return
+
+        # 3) Upload to Telegram
+        await progress.edit_text(f"📤 Uploading <b>{title}</b> ({format_time(duration)}) …", parse_mode=ParseMode.HTML)
+
+        try:
+            # send as video (streaming, supports larger files for userbot accounts)
+            await client.send_video(
+                chat_id=message.chat.id,
+                video=filepath,
+                supports_streaming=True,
+                thumb=thumb_path if thumb_path and os.path.exists(thumb_path) else None,
+                caption=f"🎬 {title}\n\nRequested by: <a href='tg://user?id={message.from_user.id}'>{message.from_user.first_name}</a>",
+                parse_mode=ParseMode.HTML,
+            )
+            await progress.delete()
+        except Exception as e:
+            await progress.edit_text(f"❌ Upload failed: <code>{e}</code>", parse_mode=ParseMode.HTML)
+            return
+
+    except Exception as exc:
+        await progress.edit_text(f"❌ Unexpected error: <code>{exc}</code>", parse_mode=ParseMode.HTML)
+        return
+    finally:
+        # cleanup
+        try:
+            shutil.rmtree(tmpdir)
+        except Exception:
+            pass
+
 
 async def rapid_youtube_search(session, query: str):
     url = "https://youtube-search-results.p.rapidapi.com/youtube-search/"
