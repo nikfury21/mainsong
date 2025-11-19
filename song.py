@@ -435,149 +435,7 @@ async def song_command(client: Client, message: Message):
         try: await progress_msg.delete()
         except: pass
 
-@handler_client.on_message(filters.command("video"))
-async def video_command(client: Client, message: Message):
-    """/video <query> - download & send the first YouTube result (cookies/login free)."""
-    import tempfile, os, time, shutil
-    from html import escape
 
-    def _single_step_text(step_num: int, total_steps: int, text: str):
-        header = "<b><u>Processing Request</u></b>\n\n"
-        return header + f"• Step {step_num}/{total_steps}: {text}"
-
-    # Safe edit helper (reused pattern from /song)
-    async def safe_edit(msg_obj, new_text, parse_mode=ParseMode.HTML, min_interval=1.0, last_edit_time_holder=None):
-        try:
-            now = time.time()
-            if last_edit_time_holder is not None:
-                last = last_edit_time_holder[0]
-                wait = max(0, min_interval - (now - last))
-                if wait > 0:
-                    await asyncio.sleep(wait)
-            await msg_obj.edit_text(new_text, parse_mode=parse_mode)
-            if last_edit_time_holder is not None:
-                last_edit_time_holder[0] = time.time()
-        except:
-            pass
-
-    user_query = " ".join(message.command[1:]).strip()
-    if not user_query:
-        await message.reply_text("Please provide a search query after /video.")
-        return
-
-    progress_msg = await message.reply_text(_single_step_text(1, 5, "Searching YouTube…"), parse_mode=ParseMode.HTML)
-    last_edit_ref = [time.time()]
-
-    # Step 1 — find first video id using your html_youtube_first (no cookies)
-    await safe_edit(progress_msg, _single_step_text(1, 5, "Finding best match…"), last_edit_time_holder=last_edit_ref)
-    try:
-        vid = await html_youtube_first(user_query)
-    except Exception:
-        vid = None
-
-    if not vid:
-        await safe_edit(progress_msg, _single_step_text(1, 5, "❌ No matching video found."), last_edit_time_holder=last_edit_ref)
-        return
-
-    video_url = f"https://www.youtube.com/watch?v={vid}"
-    thumb_url = f"https://img.youtube.com/vi/{vid}/hqdefault.jpg"
-
-    # Step 2 — prepare download
-    await safe_edit(progress_msg, _single_step_text(2, 5, "Preparing download…"), last_edit_time_holder=last_edit_ref)
-
-    temp_dir = tempfile.mkdtemp(prefix="yt_video_")
-    out_tpl = os.path.join(temp_dir, "%(title)s.%(ext)s")
-
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-        "merge_output_format": "mp4",
-        "outtmpl": out_tpl,
-        "noplaylist": True,
-        # avoid writing any cookie files
-        "nocheckcertificate": True,
-    }
-
-    await safe_edit(progress_msg, _single_step_text(3, 5, "Downloading video (this can take a while)…"), last_edit_time_holder=last_edit_ref)
-
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=True)
-            # if extract from a search entry, handle accordingly
-            if "entries" in info and info["entries"]:
-                entry = info["entries"][0]
-            else:
-                entry = info
-
-            # prepare filename from entry (yt_dlp gives actual filename via prepare_filename)
-            filename = ydl.prepare_filename(entry)
-            # ensure extension: if merge_output_format applied, filename may be .m4a/.mp4 etc.
-            if not os.path.exists(filename):
-                # try common mp4 extension
-                alt = os.path.splitext(filename)[0] + ".mp4"
-                if os.path.exists(alt):
-                    filename = alt
-
-    except Exception as e:
-        await safe_edit(progress_msg, _single_step_text(3, 5, f"❌ Download failed: {escape(str(e))}"), last_edit_time_holder=last_edit_ref)
-        try:
-            shutil.rmtree(temp_dir)
-        except:
-            pass
-        return
-
-    # Step 4 — send thumbnail (download thumbnail locally if possible) and send video
-    await safe_edit(progress_msg, _single_step_text(4, 5, "Uploading to Telegram…"), last_edit_time_holder=last_edit_ref)
-
-    thumb_path = None
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(thumb_url) as t:
-                if t.status == 200:
-                    thumb_bytes = await t.read()
-                    fd2, thumb_path = tempfile.mkstemp(suffix=".jpg")
-                    os.close(fd2)
-                    with open(thumb_path, "wb") as f:
-                        f.write(thumb_bytes)
-    except:
-        thumb_path = None
-
-    try:
-        # Sending as video (will let Telegram handle streaming & thumbnails)
-        with open(filename, "rb") as vid_file:
-            await client.send_video(
-                chat_id=message.chat.id,
-                video=vid_file,
-                thumb=thumb_path if thumb_path else None,
-                caption=f"🎬 {user_query}\n\n<code>https://youtu.be/{vid}</code>",
-                supports_streaming=True,
-                parse_mode=ParseMode.HTML
-            )
-
-        await safe_edit(progress_msg, _single_step_text(5, 5, "Done — video sent."), last_edit_time_holder=last_edit_ref)
-
-    except Exception as e:
-        await safe_edit(progress_msg, _single_step_text(5, 5, f"❌ Upload failed: {escape(str(e))}"), last_edit_time_holder=last_edit_ref)
-    finally:
-        # cleanup
-        try:
-            if thumb_path:
-                os.remove(thumb_path)
-            try:
-                os.remove(filename)
-            except:
-                pass
-            shutil.rmtree(temp_dir, ignore_errors=True)
-        except:
-            pass
-
-        # try to delete progress message after a short pause
-        try:
-            await asyncio.sleep(1.0)
-            await progress_msg.delete()
-        except:
-            pass
 
 
 @handler_client.on_message(filters.command("play"))
@@ -1075,69 +933,85 @@ async def callback_handler(client, cq: CallbackQuery):
     else:
         await cq.answer()
 
-import urllib.parse
-import json
-import aiohttp
-
 @handler_client.on_message(filters.command("video"))
 async def video_command(client, message):
-    query = " ".join(message.command[1:])
+    import aiohttp, urllib.parse, json
+    from html import escape
+
+    query = " ".join(message.command[1:]).strip()
     if not query:
         return await message.reply_text("Usage: /video <search query>")
 
-    msg = await message.reply_text(f"Searching for: <b>{query}</b>", parse_mode="html")
+    msg = await message.reply_text(
+        f"<b><u>Processing Request</u></b>\n\n• Step 1/4: Searching…",
+        parse_mode="html"
+    )
 
-    # 1) Get first YouTube result using your existing search function
+    # Step 1 — find first video ID (same as /song)
     try:
         video_id = await html_youtube_first(query)
     except Exception as e:
-        return await msg.edit(f"Search failed: <code>{e}</code>", parse_mode="html")
+        return await msg.edit(f"❌ Search failed: <code>{e}</code>", parse_mode="html")
 
     if not video_id:
-        return await msg.edit("No results found.")
+        return await msg.edit("❌ No results found.")
 
-    await msg.edit(f"Found video ID: <code>{video_id}</code>\nFetching MP4 stream…", parse_mode="html")
+    await msg.edit(
+        f"<b><u>Processing Request</u></b>\n\n• Step 2/4: Fetching video info…",
+        parse_mode="html"
+    )
 
-    # 2) Fetch get_video_info (no cookies, no login)
-    info_url = f"https://www.youtube.com/get_video_info?html5=1&video_id={video_id}"
+    # Step 2 — get MP4 streams via get_video_info (NO COOKIES)
+    info_url = (
+        f"https://www.youtube.com/get_video_info"
+        f"?video_id={video_id}&html5=1&eurl=https://youtube.googleapis.com/v/{video_id}"
+    )
 
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(info_url) as resp:
-                txt = await resp.text()
+                raw = await resp.text()
     except Exception as e:
-        return await msg.edit(f"Failed to fetch video info: <code>{e}</code>", parse_mode="html")
+        return await msg.edit(f"❌ Failed to fetch: <code>{e}</code>", parse_mode="html")
 
-    # 3) Parse player_response JSON
+    # Step 3 — Parse response
     try:
-        data = urllib.parse.parse_qs(txt)
+        data = urllib.parse.parse_qs(raw)
         player = json.loads(data["player_response"][0])
         formats = player["streamingData"]["formats"]
     except Exception as e:
-        return await msg.edit(f"Cannot parse video info: <code>{e}</code>", parse_mode="html")
+        return await msg.edit(
+            f"❌ Cannot parse video info (age-restricted or blocked).",
+            parse_mode="html"
+        )
 
-    # 4) Find MP4 itag=18 (always available, video+audio)
-    itag18 = next((f for f in formats if f.get("itag") == 18), None)
+    # We want the safest MP4 with audio: itag 18
+    stream = next((f for f in formats if f.get("itag") == 18), None)
 
-    if not itag18 or "url" not in itag18:
-        return await msg.edit("MP4 stream not found for this video.")
+    if not stream or "url" not in stream:
+        return await msg.edit("❌ No MP4 stream available for this video.")
 
-    mp4_url = itag18["url"]
+    mp4_url = stream["url"]
+    thumb = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
 
-    # 5) Send video directly (Telegram downloads it)
-    await msg.edit("Uploading video…")
+    await msg.edit(
+        f"<b><u>Processing Request</u></b>\n\n• Step 3/4: Uploading video…",
+        parse_mode="html"
+    )
 
+    # Step 4 — Send video directly (Telegram fetches it)
     try:
         await client.send_video(
             chat_id=message.chat.id,
             video=mp4_url,
-            caption=f"🎬 <b>Your video</b>\nQuery: {query}",
+            caption=f"🎬 <b>{query}</b>\n<code>https://youtu.be/{video_id}</code>",
             parse_mode="html",
-            supports_streaming=True
+            supports_streaming=True,
+            thumb=thumb
         )
         await msg.delete()
     except Exception as e:
-        await msg.edit(f"Upload failed: <code>{e}</code>", parse_mode="html")
+        await msg.edit(f"❌ Upload failed: <code>{escape(str(e))}</code>", parse_mode="html")
 
 
 # -------------------------
