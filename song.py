@@ -41,7 +41,6 @@ USERBOT_SESSION = os.getenv("USERBOT_SESSION")   # session string for user accou
 BOT_TOKEN = os.getenv("BOT_TOKEN", None)         # optional: bot account token
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
-RAPID2 = os.getenv("RAPID2")
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 TARGET_GROUP_ID = os.getenv("TARGET_GROUP_ID", None)  # optional group id to forward results to
@@ -435,127 +434,7 @@ async def song_command(client: Client, message: Message):
         try: await progress_msg.delete()
         except: pass
 
-# ============================================================
-# /videodebug  — unified debug for ALL RapidAPI video responses
-# ============================================================
-@handler_client.on_message(filters.command("videodebug"))
-async def videodebug(client, message):
-    import aiohttp, json, traceback
-    ADMIN = 8353079084
-
-    query = " ".join(message.command[1:])
-    if not query:
-        return await message.reply("Usage: /videodebug <query>")
-
-    await client.send_message(ADMIN, f"🔍 videodebug query = {query}")
-
-    # Step 1 — Search YouTube
-    video_id = await html_youtube_first(query)
-    await client.send_message(ADMIN, f"Found video_id = {video_id}")
-
-    if not video_id:
-        return await message.reply("❌ No video ID found.")
-
-    # Step 2 — Call the SAME API as /video uses
-    url = "https://cloud-api-hub-youtube-downloader.p.rapidapi.com/download"
-    headers = {
-        "x-rapidapi-key": RAPID2,
-        "x-rapidapi-host": "cloud-api-hub-youtube-downloader.p.rapidapi.com",
-    }
-    params = {"id": video_id}
-
-    await client.send_message(ADMIN, "📡 Fetching stream JSON…")
-
-    async with aiohttp.ClientSession() as s:
-        async with s.get(url, headers=headers, params=params) as r:
-            try:
-                data = await r.json()
-            except:
-                data = {"error": "Failed to parse JSON."}
-
-    # Step 3 — Format JSON
-    try:
-        pretty = json.dumps(data, indent=2)
-    except:
-        pretty = str(data)
-
-    # Step 4 — Send JSON to admin
-    try:
-        # Try as message
-        await client.send_message(ADMIN, f"<code>{pretty}</code>", parse_mode="html")
-    except:
-        # If too large, send as file
-        fname = "debug_video.json"
-        with open(fname, "w", encoding="utf-8") as f:
-            f.write(pretty)
-        await client.send_document(ADMIN, fname)
-
-    await message.reply("📨 Debug JSON sent to your DM.")
-
-
-# ============================================================
-# /video  — Unified MP4 extractor (itag 18 priority)
-# ============================================================
-@handler_client.on_message(filters.command("video"))
-async def video_command(client: Client, message: Message):
-    import asyncio, tempfile, os, traceback
-    from pyrogram.enums import ParseMode
-    from yt_dlp import YoutubeDL
-
-    ADMIN = 8353079084
-    query = " ".join(message.command[1:]).strip()
-    COOKIES = "cookies.txt"   # Netscape format
-
-    if not query:
-        return await message.reply("Usage: /video <query>")
-
-    status = await message.reply("<b>Searching…</b>", parse_mode=ParseMode.HTML)
-
-    try:
-        # STEP 1 — find the first YouTube result
-        video_id = await html_youtube_first(query)
-        if not video_id:
-            return await status.edit("❌ No result found.", parse_mode=ParseMode.HTML)
-
-        url = f"https://www.youtube.com/watch?v={video_id}"
-        await status.edit("<b>Downloading…</b>", parse_mode=ParseMode.HTML)
-
-        # STEP 2 — yt-dlp settings
-        ydl_opts = {
-            "outtmpl": "video.%(ext)s",
-            "format": "bestvideo+bestaudio/best",
-            "merge_output_format": "mp4",
-            "cookies": COOKIES,
-            "quiet": True,
-            "no_warnings": True,
-        }
-
-        # STEP 3 — download video
-        with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            file_path = ydl.prepare_filename(info).replace(".webm", ".mp4")
-
-        # STEP 4 — upload
-        await status.edit("<b>Uploading…</b>", parse_mode=ParseMode.HTML)
-
-        await client.send_video(
-            message.chat.id,
-            file_path,
-            caption=f"🎬 {info.get('title')}",
-            supports_streaming=True
-        )
-
-        await status.delete()
-        os.remove(file_path)
-
-    except Exception as e:
-        await message.reply("❌ Error occurred. Logs sent.")
-        full = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-        await client.send_message(
-            ADMIN,
-            f"⚠ ERROR IN /video\n\nQuery: {query}\n\n<code>{full}</code>",
-            parse_mode=ParseMode.HTML
-        )
+    
 
 
 
