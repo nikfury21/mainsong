@@ -511,7 +511,7 @@ async def video_command(client: Client, message: Message):
 
         await status.edit("<b>Fetching MP4 link…</b>", parse_mode=ParseMode.HTML)
 
-        # STEP 2 — Use the SAME API as videodebug (API B)
+        # STEP 2 — API B (same as videodebug)
         url = "https://ytstream-download-youtube-videos.p.rapidapi.com/dl"
         headers = {
             "X-RapidAPI-Key": RAPIDAPI_KEY,
@@ -525,18 +525,18 @@ async def video_command(client: Client, message: Message):
                     raise Exception(f"API error: {r.status}")
                 data = await r.json()
 
-        # STEP 3 — Extract MP4 list
+        # STEP 3 — Extract list of mp4 formats
         mp4_list = data.get("adaptiveFormats", []) + data.get("formats", [])
 
         mp4_url = None
 
-        # Prefer 720p (itag 22)
+        # Prefer itag 22 → 720p
         for f in mp4_list:
             if str(f.get("itag")) == "22":
                 mp4_url = f.get("url")
                 break
 
-        # fallback → 360p (itag 18)
+        # fallback → itag 18 → 360p
         if not mp4_url:
             for f in mp4_list:
                 if str(f.get("itag")) == "18":
@@ -548,17 +548,25 @@ async def video_command(client: Client, message: Message):
 
         await status.edit("<b>Downloading…</b>", parse_mode=ParseMode.HTML)
 
-        # STEP 4 — Download bytes
+        # STEP 4 — Download with browser headers (fixes blocked videos)
+        download_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept": "*/*",
+            "Connection": "keep-alive",
+            "Referer": "https://www.youtube.com/",
+        }
+
         async with aiohttp.ClientSession() as session:
-            async with session.get(mp4_url) as resp:
+            async with session.get(mp4_url, headers=download_headers) as resp:
                 if resp.status != 200:
-                    raise Exception("MP4 download failed.")
+                    raise Exception(f"MP4 download failed with HTTP {resp.status}.")
                 video_bytes = await resp.read()
 
         if len(video_bytes) < 300_000:
             raise Exception("Invalid or empty file")
 
-        # SAVE TEMP FILE
+        # SAVE TEMP MP4 FILE
         fd, temp_path = tempfile.mkstemp(suffix=".mp4")
         os.close(fd)
         with open(temp_path, "wb") as f:
@@ -584,8 +592,6 @@ async def video_command(client: Client, message: Message):
             f"⚠ ERROR IN /video\n\nQuery: {query}\nChat: {message.chat.id}\n\n<code>{full}</code>",
             parse_mode=ParseMode.HTML
         )
-
-
 
 
 
