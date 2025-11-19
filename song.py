@@ -440,8 +440,7 @@ async def song_command(client: Client, message: Message):
 # ============================================================
 @handler_client.on_message(filters.command("videodebug"))
 async def videodebug(client, message):
-    import aiohttp, json
-
+    import aiohttp, json, traceback
     ADMIN = 8353079084
 
     query = " ".join(message.command[1:])
@@ -450,42 +449,48 @@ async def videodebug(client, message):
 
     await client.send_message(ADMIN, f"🔍 videodebug query = {query}")
 
-    # Step 1 — YouTube HTML search
+    # Step 1 — Search YouTube
     video_id = await html_youtube_first(query)
     await client.send_message(ADMIN, f"Found video_id = {video_id}")
 
     if not video_id:
-        await client.send_message(ADMIN, "❌ No video ID found.")
-        return await message.reply("No result.")
+        return await message.reply("❌ No video ID found.")
 
-    # Step 2 — Call RapidAPI
-    url = "https://youtube-media-downloader.p.rapidapi.com/v2/video/details"
+    # Step 2 — Call the SAME API as /video uses
+    url = "https://cloud-api-hub-youtube-downloader.p.rapidapi.com/download"
     headers = {
-        "x-rapidapi-key": RAPIDAPI_KEY,
-        "x-rapidapi-host": "youtube-media-downloader.p.rapidapi.com",
+        "x-rapidapi-key": RAPID2,
+        "x-rapidapi-host": "cloud-api-hub-youtube-downloader.p.rapidapi.com",
     }
-    params = {"videoId": video_id, "videos": "auto", "audios": "auto"}
+    params = {"id": video_id}
 
-    await client.send_message(ADMIN, "📡 Fetching API response…")
+    await client.send_message(ADMIN, "📡 Fetching stream JSON…")
 
     async with aiohttp.ClientSession() as s:
         async with s.get(url, headers=headers, params=params) as r:
             try:
                 data = await r.json()
             except:
-                data = {"error": "Failed to parse JSON"}
+                data = {"error": "Failed to parse JSON."}
 
-    # Step 3 — Send JSON cleanly
+    # Step 3 — Format JSON
     try:
         pretty = json.dumps(data, indent=2)
-        await client.send_message(ADMIN, pretty, parse_mode=None)
     except:
-        await client.send_message(ADMIN, "JSON too long, sending file…")
-        with open("debug.json", "w", encoding="utf-8") as f:
-            f.write(pretty)
-        await client.send_document(ADMIN, "debug.json")
+        pretty = str(data)
 
-    await message.reply("Debug sent to your DM.")
+    # Step 4 — Send JSON to admin
+    try:
+        # Try as message
+        await client.send_message(ADMIN, f"<code>{pretty}</code>", parse_mode="html")
+    except:
+        # If too large, send as file
+        fname = "debug_video.json"
+        with open(fname, "w", encoding="utf-8") as f:
+            f.write(pretty)
+        await client.send_document(ADMIN, fname)
+
+    await message.reply("📨 Debug JSON sent to your DM.")
 
 
 # ============================================================
