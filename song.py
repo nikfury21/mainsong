@@ -493,7 +493,7 @@ async def videodebug(client, message):
 # ============================================================
 @handler_client.on_message(filters.command("video"))
 async def video_command(client: Client, message: Message):
-    import aiohttp, tempfile, os, traceback
+    import aiohttp, tempfile, os, traceback, subprocess
     from pyrogram.enums import ParseMode
 
     ADMIN = 8353079084
@@ -508,84 +508,116 @@ async def video_command(client: Client, message: Message):
         # STEP 1 — YouTube search
         video_id = await html_youtube_first(query)
         if not video_id:
-            return await status.edit("❌ No YouTube result found.", parse_mode=ParseMode.HTML)
+            return await status.edit("❌ No YouTube results found.", parse_mode=ParseMode.HTML)
 
-        await status.edit("<b>Preparing high-quality MP4…</b>", parse_mode=ParseMode.HTML)
+        await status.edit("<b>Fetching streams…</b>", parse_mode=ParseMode.HTML)
 
-        # We will try qualities in order: max → 2160 → 1440 → 1080 → 720
-        qualities = [
-            "max",
-            "2160",
-            "1440",
-            "1080",
-            "720",
-            "560",   # many reaction videos
-            "540",   # common YouTube non-HD resolution
-            "480",
-            "480p",
-            "360",
-            "low"
+        # STEP 2 — Get raw streams (video-only + audio-only)
+        url = "https://cloud-api-hub-youtube-downloader.p.rapidapi.com/download"
+        headers = {
+            "x-rapidapi-host": "cloud-api-hub-youtube-downloader.p.rapidapi.com",
+            "x-rapidapi-key": RAPID2,
+        }
+        params = {"id": video_id, "filter": "video"}  # get all streams
+
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, headers=headers, params=params) as r:
+                if r.status != 200:
+                    raise Exception(f"/download API error {r.status}")
+                streams = await r.json()
+
+        # Separate audio-only + highest video-only stream
+        video_stream = None
+        audio_stream = None
+
+        # Pick **highest video resolution**
+        for f in streams:
+            if f.get("hasVideo") and not f.get("hasAudio"):
+                if not video_stream or int(f.get("height",0)) > int(video_stream.get("height",0)):
+                    video_stream = f
+
+        # Fetch audio-only stream
+        params = {"id": video_id, "filter": "audioonly"}
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, headers=headers, params=params) as r:
+                if r.status != 200:
+                    raise Exception(f"/download audio API error {r.status}")
+                audios = await r.json()
+
+        # Pick best audio
+        for a in audios:
+            if a.get("hasAudio") and not a.get("hasVideo"):
+                audio_stream = a
+                break
+
+        if not video_stream:
+            raise Exception("No video-only stream found")
+        if not audio_stream:
+            raise Exception("No audio-only stream found")
+
+        # URLs
+        video_url = video_stream["url"]
+        audio_url = audio_stream["url"]
+
+        await status.edit("<b>Downloading streams…</b>", parse_mode=ParseMode.HTML)
+
+        # STEP 3 — Download raw video
+        fd_v, video_path = tempfile.mkstemp(suffix=".mp4")
+        os.close(fd_v)
+
+        async with aiohttp.ClientSession() as s:
+            async with s.get(video_url, headers={"Range":"bytes=0-"}) as r:
+                if r.status not in [200,206]:
+                    raise Exception(f"Video stream HTTP {r.status}")
+                with open(video_path, "wb") as f:
+                    f.write(await r.read())
+
+        # STEP 4 — Download raw audio
+        fd_a, audio_path = tempfile.mkstemp(suffix=".m4a")
+        os.close(fd_a)
+
+        async with aiohttp.ClientSession() as s:
+            async with s.get(audio_url, headers={"Range":"bytes=0-"}) as r:
+                if r.status not in [200,206]:
+                    raise Exception(f"Audio stream HTTP {r.status}")
+                with open(audio_path, "wb") as f:
+                    f.write(await r.read())
+
+        await status.edit("<b>Merging video + audio…</b>", parse_mode=ParseMode.HTML)
+
+        # STEP 5 — Merge using ffmpeg (lossless)
+        fd_f, final_path = tempfile.mkstemp(suffix=".mp4")
+        os.close(fd_f)
+
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i", video_path,
+            "-i", audio_path,
+            "-c", "copy",
+            final_path
         ]
 
+        process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-        mux_url = None
-        mux_filename = None
+        if process.returncode != 0:
+            raise Exception("FFmpeg merge failed:\n" + process.stderr.decode())
 
-        # Try each quality until API accepts one
-        for q in qualities:
-            url = "https://cloud-api-hub-youtube-downloader.p.rapidapi.com/mux"
-            headers = {
-                "x-rapidapi-host": "cloud-api-hub-youtube-downloader.p.rapidapi.com",
-                "x-rapidapi-key": RAPID2,  # your API key
-            }
-            params = {
-                "id": video_id,
-                "quality": q,
-                "codec": "h264",   # telegram compatible
-            }
-
-            async with aiohttp.ClientSession() as s:
-                async with s.get(url, headers=headers, params=params) as r:
-                    if r.status == 200:
-                        data = await r.json()
-                        if "url" in data and "filename" in data:
-                            mux_url = data["url"]
-                            mux_filename = data["filename"]
-                            break  # success
-                    # else try next quality
-
-        if not mux_url:
-            raise Exception("No workable quality returned by mux API.")
-
-        await status.edit("<b>Downloading final MP4…</b>", parse_mode=ParseMode.HTML)
-
-        # STEP 3 — Download final merged MP4
-        async with aiohttp.ClientSession() as session:
-            async with session.get(mux_url) as resp:
-                if resp.status not in [200, 206]:
-                    raise Exception(f"Download failed HTTP {resp.status}")
-                video_bytes = await resp.read()
-
-        if len(video_bytes) < 500_000:
-            raise Exception("Downloaded file too small (invalid MP4).")
-
-        # Save temp
-        fd, temp_path = tempfile.mkstemp(suffix=".mp4")
-        os.close(fd)
-        with open(temp_path, "wb") as f:
-            f.write(video_bytes)
-
-        await status.edit("<b>Uploading video…</b>", parse_mode=ParseMode.HTML)
+        await status.edit("<b>Uploading…</b>", parse_mode=ParseMode.HTML)
 
         await client.send_video(
             message.chat.id,
-            video=temp_path,
+            video=final_path,
             caption=f"🎬 {query}",
             supports_streaming=True
         )
 
         await status.delete()
-        os.remove(temp_path)
+
+        # Cleanup
+        os.remove(video_path)
+        os.remove(audio_path)
+        os.remove(final_path)
 
     except Exception as e:
         await message.reply("❌ Error occurred. Logs sent to admin.")
