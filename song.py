@@ -1075,62 +1075,6 @@ async def callback_handler(client, cq: CallbackQuery):
     else:
         await cq.answer()
 
-
-# --- /video command: download and send first YouTube MP4 result (no cookies/login) ---
-import concurrent.futures
-import shutil
-
-MAX_TELEGRAM_FILESIZE = 2 * 1024 * 1024 * 1024  # 2 GB safe default (adjust if your userbot allows more)
-
-def ytdlp_download_mp4(video_id: str, out_dir: str):
-    """
-    Blocking function: use yt_dlp to download the video as an MP4 into out_dir.
-    Returns dict: {"filepath": ..., "title": ..., "duration": seconds, "thumb": path_or_None}
-    """
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-        "outtmpl": os.path.join(out_dir, "%(title)s.%(ext)s"),
-        "noplaylist": True,
-        "merge_output_format": "mp4",
-        # try to avoid cookies/login
-        "nocheckcertificate": True,
-        "cookiefile": None,
-        # avoid postprocessors that need external tools if possible
-        "postprocessors": [],
-    }
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        url = f"https://www.youtube.com/watch?v={video_id}"
-        info = ydl.extract_info(url, download=True)
-        # If extract_info returns the entry
-        # find the file on disk
-        filename = ydl.prepare_filename(info)
-        # ensure mp4 extension (merge_output_format used)
-        if not filename.lower().endswith(".mp4"):
-            filename = os.path.splitext(filename)[0] + ".mp4"
-
-        title = info.get("title") or video_id
-        duration = iso8601_to_seconds(info.get("duration_iso", None)) if info.get("duration_iso") else int(info.get("duration") or 0)
-        # try common fields for duration if available
-        try:
-            duration = int(info.get("duration", duration))
-        except:
-            pass
-
-        # attempt to download thumbnail to out_dir
-        thumb_path = None
-        thumb_url = info.get("thumbnail") or f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
-        try:
-            import urllib.request
-            thumb_path = os.path.join(out_dir, "thumb.jpg")
-            urllib.request.urlretrieve(thumb_url, thumb_path)
-        except Exception:
-            thumb_path = None
-
-        return {"filepath": filename, "title": title, "duration": duration, "thumb": thumb_path}
-
 import urllib.parse
 import json
 import aiohttp
@@ -1194,6 +1138,7 @@ async def video_command(client, message):
         await msg.delete()
     except Exception as e:
         await msg.edit(f"Upload failed: <code>{e}</code>", parse_mode="html")
+
 
 # -------------------------
 # Startup / shutdown helpers
