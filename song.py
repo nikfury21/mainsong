@@ -508,60 +508,67 @@ async def video_command(client: Client, message: Message):
         # STEP 1 — YouTube search
         video_id = await html_youtube_first(query)
         if not video_id:
-            return await status.edit("❌ No YouTube results found.", parse_mode=ParseMode.HTML)
+            return await status.edit("❌ No YouTube result found.", parse_mode=ParseMode.HTML)
 
-        await status.edit("<b>Fetching merged MP4…</b>", parse_mode=ParseMode.HTML)
+        await status.edit("<b>Preparing high-quality MP4…</b>", parse_mode=ParseMode.HTML)
 
-        # STEP 2 — /mux endpoint
-        url = "https://cloud-api-hub-youtube-downloader.p.rapidapi.com/mux"
-        headers = {
-            "x-rapidapi-host": "cloud-api-hub-youtube-downloader.p.rapidapi.com",
-            "x-rapidapi-key": RAPID2,    # ENV variable
-        }
+        # We will try qualities in order: max → 2160 → 1440 → 1080 → 720
+        qualities = ["max", "2160", "1440", "1080", "720"]
 
-        # Request 720p H264 merged file
-        params = {
-            "id": video_id,
-            "quality": "720",    # recommended for phones
-            "codec": "h264",     # safest playback on Telegram
-        }
+        mux_url = None
+        mux_filename = None
 
-        async with aiohttp.ClientSession() as s:
-            async with s.get(url, headers=headers, params=params) as r:
-                if r.status != 200:
-                    raise Exception(f"API error {r.status}")
-                mux_data = await r.json()
+        # Try each quality until API accepts one
+        for q in qualities:
+            url = "https://cloud-api-hub-youtube-downloader.p.rapidapi.com/mux"
+            headers = {
+                "x-rapidapi-host": "cloud-api-hub-youtube-downloader.p.rapidapi.com",
+                "x-rapidapi-key": RAPID2,  # your API key
+            }
+            params = {
+                "id": video_id,
+                "quality": q,
+                "codec": "h264",   # telegram compatible
+            }
 
-        if "url" not in mux_data:
-            raise Exception("MUX returned no URL")
+            async with aiohttp.ClientSession() as s:
+                async with s.get(url, headers=headers, params=params) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        if "url" in data and "filename" in data:
+                            mux_url = data["url"]
+                            mux_filename = data["filename"]
+                            break  # success
+                    # else try next quality
 
-        download_url = mux_data["url"]
+        if not mux_url:
+            raise Exception("No workable quality returned by mux API.")
 
         await status.edit("<b>Downloading final MP4…</b>", parse_mode=ParseMode.HTML)
 
-        # STEP 3 — Download the merged MP4 from tunnel link
+        # STEP 3 — Download final merged MP4
         async with aiohttp.ClientSession() as session:
-            async with session.get(download_url) as resp:
-                if resp.status != 200:
-                    raise Exception("Final MP4 download failed.")
+            async with session.get(mux_url) as resp:
+                if resp.status not in [200, 206]:
+                    raise Exception(f"Download failed HTTP {resp.status}")
                 video_bytes = await resp.read()
 
-        if len(video_bytes) < 300_000:
-            raise Exception("Invalid/empty video file.")
+        if len(video_bytes) < 500_000:
+            raise Exception("Downloaded file too small (invalid MP4).")
 
-        # Save temp file
+        # Save temp
         fd, temp_path = tempfile.mkstemp(suffix=".mp4")
         os.close(fd)
         with open(temp_path, "wb") as f:
             f.write(video_bytes)
 
-        await status.edit("<b>Uploading…</b>", parse_mode=ParseMode.HTML)
+        await status.edit("<b>Uploading video…</b>", parse_mode=ParseMode.HTML)
 
         await client.send_video(
             message.chat.id,
             video=temp_path,
             caption=f"🎬 {query}",
-            supports_streaming=True,
+            supports_streaming=True
         )
 
         await status.delete()
@@ -572,7 +579,10 @@ async def video_command(client: Client, message: Message):
         full = "".join(traceback.format_exception(type(e), e, e.__traceback__))
         await client.send_message(
             ADMIN,
-            f"⚠ ERROR IN /video\n\nQuery: {query}\nChat: {message.chat.id}\n\n<code>{full}</code>",
+            f"⚠ ERROR IN /video\n\n"
+            f"Query: {query}\n"
+            f"Chat: {message.chat.id}\n\n"
+            f"<code>{full}</code>",
             parse_mode=ParseMode.HTML
         )
 
