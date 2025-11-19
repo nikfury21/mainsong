@@ -446,7 +446,6 @@ async def video_command(client: Client, message: Message):
 
     msg = await message.reply_text("Searching YouTube…")
 
-    # use your working finder
     try:
         vid = await html_youtube_first(user_query)
     except:
@@ -454,57 +453,56 @@ async def video_command(client: Client, message: Message):
 
     await msg.edit_text("Fetching qualities…")
 
-    # CAPTCHAFREE info: using get_video_info (never triggers login page)
-    info_url = f"https://www.youtube.com/get_video_info?video_id={vid}&el=embedded&hl=en"
+    url = "https://youtubei.googleapis.com/youtubei/v1/player?key=AIzaSyA-5XoFG8CqFBbrJAHYmg9ZvAP_qBq25ek"
 
-    async with aiohttp.ClientSession() as ses:
-        async with ses.get(info_url) as r:
-            data = await r.text()
+    payload = {
+        "context": {
+            "client": {
+                "clientName": "ANDROID",
+                "clientVersion": "19.08.35"
+            }
+        },
+        "videoId": vid
+    }
 
-    import urllib.parse
-    params = urllib.parse.parse_qs(data)
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload) as r:
+            data = await r.json()
 
-    if "player_response" not in params:
-        return await msg.edit_text("Unable to get video info.")
-
-    pr = json.loads(params["player_response"][0])
-    streaming = pr.get("streamingData", {})
-
+    streaming = data.get("streamingData", {})
     formats = streaming.get("formats", []) + streaming.get("adaptiveFormats", [])
-    quality_map = {}
 
+    quality_map = {}
     for f in formats:
-        if f.get("height") and f.get("mimeType", "").startswith("video/"):
-            height = f["height"]
-            fmt_id = f.get("itag")
-            quality_map[height] = fmt_id
+        if "height" in f and "itag" in f and f.get("mimeType", "").startswith("video/"):
+            quality_map[f["height"]] = f["itag"]
 
     if not quality_map:
-        return await msg.edit_text("No video qualities found.")
+        return await msg.edit_text("No video qualities available.")
 
-    # Sort qualities
     qualities = sorted(quality_map.keys())
+    title = data.get("videoDetails", {}).get("title", "Video")
 
-    # Build inline keyboard
     from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
     rows = []
     row = []
-
     for q in qualities:
         cb = f"vdsel|{vid}|{quality_map[q]}|{q}"
         row.append(InlineKeyboardButton(f"{q}p", callback_data=cb))
+
         if len(row) == 3:
             rows.append(row)
             row = []
+
     if row:
         rows.append(row)
-
-    title = pr.get("videoDetails", {}).get("title", "Video")
 
     await msg.edit_text(
         f"<b>Select quality for</b>:\n{escape(title)}",
         reply_markup=InlineKeyboardMarkup(rows)
     )
+
 
 
 
