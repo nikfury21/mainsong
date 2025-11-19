@@ -435,6 +435,149 @@ async def song_command(client: Client, message: Message):
         except: pass
 
     
+@handler_client.on_message(filters.command("video"))
+async def video_command(client: Client, message: Message):
+    """/video <query> - download & send the first YouTube result (cookies/login free)."""
+    import tempfile, os, time, shutil
+    from html import escape
+
+    def _single_step_text(step_num: int, total_steps: int, text: str):
+        header = "<b><u>Processing Request</u></b>\n\n"
+        return header + f"• Step {step_num}/{total_steps}: {text}"
+
+    # Safe edit helper (reused pattern from /song)
+    async def safe_edit(msg_obj, new_text, parse_mode=ParseMode.HTML, min_interval=1.0, last_edit_time_holder=None):
+        try:
+            now = time.time()
+            if last_edit_time_holder is not None:
+                last = last_edit_time_holder[0]
+                wait = max(0, min_interval - (now - last))
+                if wait > 0:
+                    await asyncio.sleep(wait)
+            await msg_obj.edit_text(new_text, parse_mode=parse_mode)
+            if last_edit_time_holder is not None:
+                last_edit_time_holder[0] = time.time()
+        except:
+            pass
+
+    user_query = " ".join(message.command[1:]).strip()
+    if not user_query:
+        await message.reply_text("Please provide a search query after /video.")
+        return
+
+    progress_msg = await message.reply_text(_single_step_text(1, 5, "Searching YouTube…"), parse_mode=ParseMode.HTML)
+    last_edit_ref = [time.time()]
+
+    # Step 1 — find first video id using your html_youtube_first (no cookies)
+    await safe_edit(progress_msg, _single_step_text(1, 5, "Finding best match…"), last_edit_time_holder=last_edit_ref)
+    try:
+        vid = await html_youtube_first(user_query)
+    except Exception:
+        vid = None
+
+    if not vid:
+        await safe_edit(progress_msg, _single_step_text(1, 5, "❌ No matching video found."), last_edit_time_holder=last_edit_ref)
+        return
+
+    video_url = f"https://www.youtube.com/watch?v={vid}"
+    thumb_url = f"https://img.youtube.com/vi/{vid}/hqdefault.jpg"
+
+    # Step 2 — prepare download
+    await safe_edit(progress_msg, _single_step_text(2, 5, "Preparing download…"), last_edit_time_holder=last_edit_ref)
+
+    temp_dir = tempfile.mkdtemp(prefix="yt_video_")
+    out_tpl = os.path.join(temp_dir, "%(title)s.%(ext)s")
+
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "merge_output_format": "mp4",
+        "outtmpl": out_tpl,
+        "noplaylist": True,
+        # avoid writing any cookie files
+        "nocheckcertificate": True,
+    }
+
+    await safe_edit(progress_msg, _single_step_text(3, 5, "Downloading video (this can take a while)…"), last_edit_time_holder=last_edit_ref)
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video_url, download=True)
+            # if extract from a search entry, handle accordingly
+            if "entries" in info and info["entries"]:
+                entry = info["entries"][0]
+            else:
+                entry = info
+
+            # prepare filename from entry (yt_dlp gives actual filename via prepare_filename)
+            filename = ydl.prepare_filename(entry)
+            # ensure extension: if merge_output_format applied, filename may be .m4a/.mp4 etc.
+            if not os.path.exists(filename):
+                # try common mp4 extension
+                alt = os.path.splitext(filename)[0] + ".mp4"
+                if os.path.exists(alt):
+                    filename = alt
+
+    except Exception as e:
+        await safe_edit(progress_msg, _single_step_text(3, 5, f"❌ Download failed: {escape(str(e))}"), last_edit_time_holder=last_edit_ref)
+        try:
+            shutil.rmtree(temp_dir)
+        except:
+            pass
+        return
+
+    # Step 4 — send thumbnail (download thumbnail locally if possible) and send video
+    await safe_edit(progress_msg, _single_step_text(4, 5, "Uploading to Telegram…"), last_edit_time_holder=last_edit_ref)
+
+    thumb_path = None
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(thumb_url) as t:
+                if t.status == 200:
+                    thumb_bytes = await t.read()
+                    fd2, thumb_path = tempfile.mkstemp(suffix=".jpg")
+                    os.close(fd2)
+                    with open(thumb_path, "wb") as f:
+                        f.write(thumb_bytes)
+    except:
+        thumb_path = None
+
+    try:
+        # Sending as video (will let Telegram handle streaming & thumbnails)
+        with open(filename, "rb") as vid_file:
+            await client.send_video(
+                chat_id=message.chat.id,
+                video=vid_file,
+                thumb=thumb_path if thumb_path else None,
+                caption=f"🎬 {user_query}\n\n<code>https://youtu.be/{vid}</code>",
+                supports_streaming=True,
+                parse_mode=ParseMode.HTML
+            )
+
+        await safe_edit(progress_msg, _single_step_text(5, 5, "Done — video sent."), last_edit_time_holder=last_edit_ref)
+
+    except Exception as e:
+        await safe_edit(progress_msg, _single_step_text(5, 5, f"❌ Upload failed: {escape(str(e))}"), last_edit_time_holder=last_edit_ref)
+    finally:
+        # cleanup
+        try:
+            if thumb_path:
+                os.remove(thumb_path)
+            try:
+                os.remove(filename)
+            except:
+                pass
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except:
+            pass
+
+        # try to delete progress message after a short pause
+        try:
+            await asyncio.sleep(1.0)
+            await progress_msg.delete()
+        except:
+            pass
 
 
 
