@@ -511,18 +511,13 @@ async def video_command(client: Client, message: Message):
 
         await status.edit("<b>Fetching MP4 link…</b>", parse_mode=ParseMode.HTML)
 
-        # STEP 2 — RapidAPI video details
-        url = "https://youtube-media-downloader.p.rapidapi.com/v2/video/details"
+        # STEP 2 — Use API B (ytstream)
+        url = "https://ytstream-download-youtube-videos.p.rapidapi.com/dl"
         headers = {
-            "x-rapidapi-host": "youtube-media-downloader.p.rapidapi.com",
-            "x-rapidapi-key": RAPIDAPI_KEY,
+            "X-RapidAPI-Key": RAPIDAPI_KEY,
+            "X-RapidAPI-Host": "ytstream-download-youtube-videos.p.rapidapi.com",
         }
-        params = {
-            "videoId": video_id,
-            "videos": "auto",
-            "audios": "auto",
-            "urlAccess": "normal"
-        }
+        params = {"id": video_id}
 
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers, params=params) as r:
@@ -530,55 +525,38 @@ async def video_command(client: Client, message: Message):
                     raise Exception(f"API error: {r.status}")
                 data = await r.json()
 
-        # STEP 3 — Extract ALL possible MP4 sources
-        formats = []
-
-        # direct formats
-        if "formats" in data:
-            formats.extend(data["formats"])
-
-        # nested formats (some API responses use this)
-        if "videos" in data and isinstance(data["videos"], dict):
-            items = data["videos"].get("items", [])
-            for item in items:
-                if isinstance(item, dict):
-                    if "formats" in item:
-                        formats.extend(item["formats"])
-                    if "format" in item:
-                        formats.extend(item["format"])
-
-        # STEP 4 — Find itag=18 (MP4+audio)
+        # STEP 3 — Find the best MP4 link
         mp4_url = None
 
-        for f in formats:
-            if str(f.get("itag")) == "18":
-                mp4_url = f.get("url")
+        # API response: data["link"] contains list of qualities
+        for item in data.get("link", []):
+            if item.get("type") == "mp4" and "audio" in item.get("quality", "").lower():
+                mp4_url = item.get("url")
                 break
 
-        # If itag18 missing → pick first MP4 with audio
+        # fallback → any mp4
         if not mp4_url:
-            for f in formats:
-                mt = f.get("mimeType", "")
-                if "video/mp4" in mt and "audio" in mt:
-                    mp4_url = f.get("url")
+            for item in data.get("link", []):
+                if item.get("type") == "mp4":
+                    mp4_url = item.get("url")
                     break
 
         if not mp4_url:
-            raise Exception("No MP4 (itag18 or fallback) found in JSON.")
+            raise Exception("No MP4 link found in API response.")
 
         await status.edit("<b>Downloading…</b>", parse_mode=ParseMode.HTML)
 
-        # STEP 5 — Download MP4
+        # STEP 4 — Download MP4
         async with aiohttp.ClientSession() as session:
             async with session.get(mp4_url) as resp:
                 if resp.status != 200:
                     raise Exception("Video download failed.")
                 video_bytes = await resp.read()
 
-        if len(video_bytes) < 300_000:
-            raise Exception("Invalid or empty MP4 file.")
+        if len(video_bytes) < 100_000:
+            raise Exception("Invalid/empty MP4 file.")
 
-        # Write temp file
+        # Save file
         fd, temp_path = tempfile.mkstemp(suffix=".mp4")
         os.close(fd)
         with open(temp_path, "wb") as f:
@@ -611,8 +589,6 @@ async def video_command(client: Client, message: Message):
             )
         except:
             pass
-
-
 
 
 
