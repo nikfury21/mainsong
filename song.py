@@ -491,21 +491,10 @@ async def videodebug(client, message):
 
 @handler_client.on_message(filters.command("video"))
 async def video_command(client: Client, message: Message):
-    import aiohttp, tempfile, os, traceback, urllib.parse, json
+    import aiohttp, tempfile, os, traceback
     from pyrogram.enums import ParseMode
 
-    ADMIN = 8353079084  # your Telegram ID
-
-    def decode_cipher(cipher):
-        """Decodes signatureCipher into a usable googlevideo URL."""
-        try:
-            data = urllib.parse.parse_qs(cipher)
-            url = data["url"][0]
-            s = data["s"][0]
-            sp = data.get("sp", ["signature"])[0]
-            return f"{url}&{sp}={s}"
-        except:
-            return None
+    ADMIN = 8353079084  # your ID
 
     query = " ".join(message.command[1:])
     if not query:
@@ -514,88 +503,75 @@ async def video_command(client: Client, message: Message):
     try:
         status = await message.reply("<b>Searching YouTube…</b>", parse_mode=ParseMode.HTML)
 
-        # STEP 1 — get the first recommended YouTube video
         video_id = await html_youtube_first(query)
         if not video_id:
-            return await status.edit("❌ No matching video found.", parse_mode=ParseMode.HTML)
+            return await status.edit("❌ No video found.", parse_mode=ParseMode.HTML)
 
-        await status.edit("<b>Fetching MP4 formats…</b>", parse_mode=ParseMode.HTML)
+        await status.edit("<b>Getting formats…</b>", parse_mode=ParseMode.HTML)
 
-        # STEP 2 — RapidAPI ytstream call
         api_url = "https://ytstream-download-youtube-videos.p.rapidapi.com/dl"
         headers = {
             "X-RapidAPI-Key": RAPIDAPI_KEY,
             "X-RapidAPI-Host": "ytstream-download-youtube-videos.p.rapidapi.com",
         }
-        params = {"id": video_id}
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(api_url, headers=headers, params=params) as r:
+            async with session.get(api_url, headers=headers, params={"id": video_id}) as r:
                 data = await r.json()
 
             formats = data.get("formats", [])
-            mp4_link = None
-            cipher_link = None
 
-            # Pick itag 18
+            # Priority-based format selection
+            candidates = []
+
+            # 1. itag 18 first
             for f in formats:
-                if f.get("itag") == 18:
-                    if f.get("url"):
-                        mp4_link = f["url"]
-                    elif f.get("signatureCipher"):
-                        cipher_link = decode_cipher(f["signatureCipher"])
-                    break
+                if f.get("itag") == 18 and f.get("url"):
+                    candidates.append(f["url"])
 
-            if not mp4_link and cipher_link:
-                mp4_link = cipher_link
+            # 2. itag 22 second
+            for f in formats:
+                if f.get("itag") == 22 and f.get("url"):
+                    candidates.append(f["url"])
 
-            if not mp4_link:
-                raise Exception("itag 18 not found and no cipher fallback.")
+            # 3. Any mp4 with audio
+            for f in formats:
+                mime = f.get("mimeType", "").lower()
+                if "video/mp4" in mime and f.get("url") and f.get("audioQuality"):
+                    candidates.append(f["url"])
 
-            await status.edit("<b>Downloading…</b>", parse_mode=ParseMode.HTML)
+            # 4. Any mp4 at all
+            for f in formats:
+                mime = f.get("mimeType", "").lower()
+                if "video/mp4" in mime and f.get("url"):
+                    candidates.append(f["url"])
 
-            # STEP 3 — Attempt download with retry
-            async def try_download(link):
-                async with session.get(link) as resp:
+            if not candidates:
+                raise Exception("No MP4 candidate links found.")
+
+            await status.edit("<b>Trying available MP4 links…</b>", parse_mode=ParseMode.HTML)
+
+            file_bytes = None
+
+            # Try each link until one works
+            async def try_download(url):
+                async with session.get(url) as resp:
                     if resp.status != 200:
                         return None
-                    return await resp.read()
+                    b = await resp.read()
+                    if len(b) < 200_000:  # skip bad files
+                        return None
+                    return b
 
-            file_bytes = await try_download(mp4_link)
-
-            # If link fails, try fallback API
-            if not file_bytes:
-                await status.edit("<b>Retrying with backup extractor…</b>", parse_mode=ParseMode.HTML)
-
-                backup = f"https://yt-api.p.rapidapi.com/dl?id={video_id}"
-                headers2 = {
-                    "X-RapidAPI-Key": RAPIDAPI_KEY,
-                    "X-RapidAPI-Host": "yt-api.p.rapidapi.com",
-                }
-
-                async with session.get(backup, headers=headers2) as r2:
-                    data2 = await r2.json()
-
-                # Find MP4 format
-                new_mp4 = None
-                if "formats" in data2:
-                    for f in data2["formats"]:
-                        if f.get("itag") == 18 and f.get("url"):
-                            new_mp4 = f["url"]
-                            break
-
-                if not new_mp4:
-                    raise Exception("Backup extractor did not return MP4.")
-
-                file_bytes = await try_download(new_mp4)
+            for url in candidates:
+                file_bytes = await try_download(url)
+                if file_bytes:
+                    break  # success
 
             if not file_bytes:
-                raise Exception("All download attempts failed.")
+                raise Exception("All MP4 download attempts failed.")
 
-            if len(file_bytes) < 150_000:
-                raise Exception("Downloaded MP4 is too small (corrupt).")
-
-            # Save temp
+            # Save temp file
             fd, temp_path = tempfile.mkstemp(suffix=".mp4")
             os.close(fd)
             with open(temp_path, "wb") as f:
@@ -604,32 +580,30 @@ async def video_command(client: Client, message: Message):
         await status.edit("<b>Uploading…</b>", parse_mode=ParseMode.HTML)
 
         await client.send_video(
-            message.chat.id,
-            open(temp_path, "rb"),
+            chat_id=message.chat.id,
+            video=open(temp_path, "rb"),
             caption=f"🎬 {query}",
             supports_streaming=True
         )
         await status.delete()
-
         os.remove(temp_path)
 
     except Exception as e:
-        # Group message
         await message.reply("❌ Error occurred. Logs sent to admin.")
 
-        # Admin DM
         try:
-            full_error = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+            full_err = "".join(traceback.format_exception(type(e), e, e.__traceback__))
             await client.send_message(
                 ADMIN,
                 f"⚠️ ERROR in /video\n\n"
                 f"<b>Query:</b> {query}\n"
                 f"<b>Chat:</b> {message.chat.id}\n\n"
-                f"<b>Error:</b>\n<code>{full_error}</code>",
+                f"<b>Traceback:</b>\n<code>{full_err}</code>",
                 parse_mode=ParseMode.HTML
             )
         except:
             pass
+
 
 
 
