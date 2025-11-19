@@ -494,20 +494,20 @@ async def video_command(client: Client, message: Message):
     import aiohttp, tempfile, os, traceback
     from pyrogram.enums import ParseMode
 
-    ADMIN = 8353079084  # your ID
+    ADMIN = 8353079084
 
     query = " ".join(message.command[1:])
     if not query:
         return await message.reply("Usage: /video <search query>")
 
     try:
-        status = await message.reply("<b>Searching YouTube…</b>", parse_mode=ParseMode.HTML)
+        status = await message.reply("<b>Searching…</b>", parse_mode=ParseMode.HTML)
 
         video_id = await html_youtube_first(query)
         if not video_id:
             return await status.edit("❌ No video found.", parse_mode=ParseMode.HTML)
 
-        await status.edit("<b>Getting formats…</b>", parse_mode=ParseMode.HTML)
+        await status.edit("<b>Fetching download link…</b>", parse_mode=ParseMode.HTML)
 
         api_url = "https://ytstream-download-youtube-videos.p.rapidapi.com/dl"
         headers = {
@@ -519,59 +519,44 @@ async def video_command(client: Client, message: Message):
             async with session.get(api_url, headers=headers, params={"id": video_id}) as r:
                 data = await r.json()
 
+            # ⭐ Primary working link provided by API (the stable CDN link)
+            main_link = data.get("link")
+
             formats = data.get("formats", [])
+            backup_links = [f.get("url") for f in formats if "mp4" in f.get("mimeType", "").lower()]
 
-            # Priority-based format selection
-            candidates = []
-
-            # 1. itag 18 first
-            for f in formats:
-                if f.get("itag") == 18 and f.get("url"):
-                    candidates.append(f["url"])
-
-            # 2. itag 22 second
-            for f in formats:
-                if f.get("itag") == 22 and f.get("url"):
-                    candidates.append(f["url"])
-
-            # 3. Any mp4 with audio
-            for f in formats:
-                mime = f.get("mimeType", "").lower()
-                if "video/mp4" in mime and f.get("url") and f.get("audioQuality"):
-                    candidates.append(f["url"])
-
-            # 4. Any mp4 at all
-            for f in formats:
-                mime = f.get("mimeType", "").lower()
-                if "video/mp4" in mime and f.get("url"):
-                    candidates.append(f["url"])
-
-            if not candidates:
-                raise Exception("No MP4 candidate links found.")
-
-            await status.edit("<b>Trying available MP4 links…</b>", parse_mode=ParseMode.HTML)
+            if not main_link and not backup_links:
+                raise Exception("No downloadable links found in API response.")
 
             file_bytes = None
 
-            # Try each link until one works
             async def try_download(url):
-                async with session.get(url) as resp:
-                    if resp.status != 200:
-                        return None
-                    b = await resp.read()
-                    if len(b) < 200_000:  # skip bad files
-                        return None
-                    return b
+                try:
+                    async with session.get(url) as resp:
+                        if resp.status != 200:
+                            return None
+                        content = await resp.read()
+                        if len(content) < 200_000:
+                            return None
+                        return content
+                except:
+                    return None
 
-            for url in candidates:
-                file_bytes = await try_download(url)
-                if file_bytes:
-                    break  # success
+            # 1️⃣ Try main API link first — MOST reliable
+            if main_link:
+                file_bytes = await try_download(main_link)
+
+            # 2️⃣ Try backup MP4 links if needed
+            if not file_bytes:
+                for url in backup_links:
+                    file_bytes = await try_download(url)
+                    if file_bytes:
+                        break
 
             if not file_bytes:
-                raise Exception("All MP4 download attempts failed.")
+                raise Exception("All download attempts failed. (Main + backups)")
 
-            # Save temp file
+            # Save to temp
             fd, temp_path = tempfile.mkstemp(suffix=".mp4")
             os.close(fd)
             with open(temp_path, "wb") as f:
@@ -598,11 +583,12 @@ async def video_command(client: Client, message: Message):
                 f"⚠️ ERROR in /video\n\n"
                 f"<b>Query:</b> {query}\n"
                 f"<b>Chat:</b> {message.chat.id}\n\n"
-                f"<b>Traceback:</b>\n<code>{full_err}</code>",
+                f"<b>Error:</b>\n<code>{full_err}</code>",
                 parse_mode=ParseMode.HTML
             )
         except:
             pass
+
 
 
 
