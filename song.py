@@ -491,87 +491,105 @@ async def videodebug(client, message):
 
 @handler_client.on_message(filters.command("video"))
 async def video_command(client: Client, message: Message):
-    import aiohttp, tempfile, os
+    import aiohttp, tempfile, os, traceback
+    from pyrogram.enums import ParseMode
+
+    ADMIN = 8353079084  # <<<< your Telegram ID
 
     query = " ".join(message.command[1:])
     if not query:
         return await message.reply("Usage: /video <search query>")
 
-    status = await message.reply("<b>Searching YouTube…</b>", parse_mode="html")
-
-    # STEP 1 — get the first recommended YouTube video
-    video_id = await html_youtube_first(query)
-    if not video_id:
-        return await status.edit("❌ No matching video found.", parse_mode="html")
-
-    await status.edit("<b>Fetching MP4 (itag 18)…</b>", parse_mode="html")
-
-    # STEP 2 — RapidAPI ytstream call
-    api_url = "https://ytstream-download-youtube-videos.p.rapidapi.com/dl"
-    headers = {
-        "X-RapidAPI-Key": RAPIDAPI_KEY,
-        "X-RapidAPI-Host": "ytstream-download-youtube-videos.p.rapidapi.com",
-    }
-    params = {"id": video_id}
-
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(api_url, headers=headers, params=params) as r:
-                data = await r.json()
-        except Exception as e:
-            return await status.edit(f"❌ API Error:\n<code>{e}</code>", parse_mode="html")
-
-        formats = data.get("formats", [])
-        mp4_link = None
-
-        # ✔ PICK EXACTLY itag 18 (always MP4 + audio, never fails)
-        for fmt in formats:
-            if fmt.get("itag") == 18:
-                mp4_link = fmt.get("url")
-                break
-
-        if not mp4_link:
-            return await status.edit(
-                "❌ No valid MP4 link found (itag 18 missing).", parse_mode="html"
-            )
-
-        await status.edit("<b>Downloading…</b>", parse_mode="html")
-
-        # STEP 3 — Download video safely
-        async with session.get(mp4_link) as resp:
-            if resp.status != 200:
-                return await status.edit("❌ Failed to download the video.", parse_mode="html")
-
-            file_bytes = await resp.read()
-
-        # ✔ Prevent 0-byte file issue
-        if len(file_bytes) < 200_000:  # <200 KB definitely broken
-            return await status.edit("❌ Invalid or zero-size MP4 file.", parse_mode="html")
-
-        # Save temporary file
-        fd, temp_path = tempfile.mkstemp(suffix=".mp4")
-        os.close(fd)
-        with open(temp_path, "wb") as f:
-            f.write(file_bytes)
-
-    await status.edit("<b>Uploading…</b>", parse_mode="html")
-
-    # STEP 4 — upload to Telegram
     try:
-        await client.send_video(
-            message.chat.id,
-            open(temp_path, "rb"),
-            caption=f"🎬 {query}",
-            supports_streaming=True
-        )
-        await status.delete()
+        status = await message.reply("<b>Searching YouTube…</b>", parse_mode=ParseMode.HTML)
 
+        # STEP 1 — get the first recommended YouTube video
+        video_id = await html_youtube_first(query)
+        if not video_id:
+            return await status.edit("❌ No matching video found.", parse_mode=ParseMode.HTML)
+
+        await status.edit("<b>Fetching MP4 (itag 18)…</b>", parse_mode=ParseMode.HTML)
+
+        # STEP 2 — RapidAPI ytstream call
+        api_url = "https://ytstream-download-youtube-videos.p.rapidapi.com/dl"
+        headers = {
+            "X-RapidAPI-Key": RAPIDAPI_KEY,
+            "X-RapidAPI-Host": "ytstream-download-youtube-videos.p.rapidapi.com",
+        }
+        params = {"id": video_id}
+
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.get(api_url, headers=headers, params=params) as r:
+                    data = await r.json()
+            except Exception as e:
+                raise Exception(f"API Error: {e}")
+
+            formats = data.get("formats", [])
+            mp4_link = None
+
+            # ✔ PICK EXACTLY itag 18 (always MP4 + audio)
+            for fmt in formats:
+                if fmt.get("itag") == 18:
+                    mp4_link = fmt.get("url")
+                    break
+
+            if not mp4_link:
+                raise Exception("itag 18 MP4 not found in formats list.")
+
+            await status.edit("<b>Downloading…</b>", parse_mode=ParseMode.HTML)
+
+            # STEP 3 — Download video safely
+            async with session.get(mp4_link) as resp:
+                if resp.status != 200:
+                    raise Exception("Download returned non-200 status.")
+
+                file_bytes = await resp.read()
+
+            # ✔ Prevent 0-byte file issue
+            if len(file_bytes) < 200_000:
+                raise Exception("Downloaded file smaller than 200KB → invalid.")
+
+            # Save temp file
+            fd, temp_path = tempfile.mkstemp(suffix=".mp4")
+            os.close(fd)
+            with open(temp_path, "wb") as f:
+                f.write(file_bytes)
+
+        await status.edit("<b>Uploading…</b>", parse_mode=ParseMode.HTML)
+
+        # STEP 4 — Upload to Telegram
+        try:
+            await client.send_video(
+                message.chat.id,
+                open(temp_path, "rb"),
+                caption=f"🎬 {query}",
+                supports_streaming=True
+            )
+            await status.delete()
+
+        finally:
+            try: os.remove(temp_path)
+            except: pass
+
+    # =============== ERROR HANDLING =============== #
     except Exception as e:
-        await status.edit(f"❌ Upload error:\n<code>{e}</code>", parse_mode="html")
+        # 1️⃣ Send short error message in group
+        await message.reply("❌ Error occurred. Logs sent to admin DM.")
 
-    finally:
-        try: os.remove(temp_path)
-        except: pass
+        # 2️⃣ Send detailed traceback to admin DM
+        try:
+            full_error = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+            await client.send_message(
+                ADMIN,
+                f"⚠️ ERROR in /video\n\n"
+                f"<b>Query:</b> {query}\n"
+                f"<b>Chat:</b> {message.chat.id}\n\n"
+                f"<b>Traceback:</b>\n<code>{full_error}</code>",
+                parse_mode=ParseMode.HTML
+            )
+        except:
+            pass
 
 
 
