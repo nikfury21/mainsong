@@ -434,156 +434,149 @@ async def song_command(client: Client, message: Message):
         try: await progress_msg.delete()
         except: pass
 
-    
-from pyrogram import filters
-from pyrogram.types import (
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    CallbackQuery
-)
-from yt_qualities import get_all_qualities
-import os, aiohttp, tempfile, shutil, asyncio
-from html import escape
-import yt_dlp
-
-
-from pyrogram import filters
-from pyrogram.types import (
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    CallbackQuery
-)
-from pyrogram.enums import ParseMode
-from yt_qualities import get_all_qualities
-import os, aiohttp, tempfile, shutil, asyncio
-from html import escape
-import yt_dlp
-
-
 @handler_client.on_message(filters.command("video"))
-async def video_command(client, message):
+async def video_command(client: Client, message: Message):
+    """/video <query> - download & send the first YouTube result (cookies/login free)."""
+    import tempfile, os, time, shutil
+    from html import escape
+
+    def _single_step_text(step_num: int, total_steps: int, text: str):
+        header = "<b><u>Processing Request</u></b>\n\n"
+        return header + f"• Step {step_num}/{total_steps}: {text}"
+
+    # Safe edit helper (reused pattern from /song)
+    async def safe_edit(msg_obj, new_text, parse_mode=ParseMode.HTML, min_interval=1.0, last_edit_time_holder=None):
+        try:
+            now = time.time()
+            if last_edit_time_holder is not None:
+                last = last_edit_time_holder[0]
+                wait = max(0, min_interval - (now - last))
+                if wait > 0:
+                    await asyncio.sleep(wait)
+            await msg_obj.edit_text(new_text, parse_mode=parse_mode)
+            if last_edit_time_holder is not None:
+                last_edit_time_holder[0] = time.time()
+        except:
+            pass
+
     user_query = " ".join(message.command[1:]).strip()
     if not user_query:
-        return await message.reply_text("Please provide a search query after /video.")
+        await message.reply_text("Please provide a search query after /video.")
+        return
 
-    msg = await message.reply_text(
-        "<b>Searching YouTube…</b>",
-        parse_mode=ParseMode.HTML
-    )
+    progress_msg = await message.reply_text(_single_step_text(1, 5, "Searching YouTube…"), parse_mode=ParseMode.HTML)
+    last_edit_ref = [time.time()]
 
-    # Find video id
+    # Step 1 — find first video id using your html_youtube_first (no cookies)
+    await safe_edit(progress_msg, _single_step_text(1, 5, "Finding best match…"), last_edit_time_holder=last_edit_ref)
     try:
         vid = await html_youtube_first(user_query)
-    except:
+    except Exception:
         vid = None
 
     if not vid:
-        return await msg.edit_text("❌ No matching video found.", parse_mode=ParseMode.HTML)
+        await safe_edit(progress_msg, _single_step_text(1, 5, "❌ No matching video found."), last_edit_time_holder=last_edit_ref)
+        return
 
-    await msg.edit_text("<b>Fetching available qualities…</b>", parse_mode=ParseMode.HTML)
+    video_url = f"https://www.youtube.com/watch?v={vid}"
+    thumb_url = f"https://img.youtube.com/vi/{vid}/hqdefault.jpg"
 
-    try:
-        qualities = await get_all_qualities(vid)
-    except Exception as e:
-        return await msg.edit_text(
-            f"❌ Failed to fetch qualities.\n<code>{escape(str(e))}</code>",
-            parse_mode=ParseMode.HTML
-        )
+    # Step 2 — prepare download
+    await safe_edit(progress_msg, _single_step_text(2, 5, "Preparing download…"), last_edit_time_holder=last_edit_ref)
 
-    if not qualities:
-        return await msg.edit_text("❌ No downloadable qualities found.", parse_mode=ParseMode.HTML)
-
-    # Build inline keyboard
-    buttons = []
-    row = []
-
-    for q in qualities:
-        row.append(
-            InlineKeyboardButton(
-                f"{q['height']}p",
-                callback_data=f"vdsel|{vid}|{q['itag']}|{q['height']}"
-            )
-        )
-        if len(row) == 3:
-            buttons.append(row)
-            row = []
-
-    if row:
-        buttons.append(row)
-
-    await msg.edit_text(
-        f"<b>Select quality for:</b>\nhttps://youtu.be/{vid}",
-        reply_markup=InlineKeyboardMarkup(buttons),
-        parse_mode=ParseMode.HTML,
-        disable_web_page_preview=True
-    )
-
-
-@handler_client.on_callback_query(filters.regex(r"^vdsel\|"))
-async def video_quality_selected(client, query: CallbackQuery):
-    _, vid, itag, quality = query.data.split("|")
-
-    await query.message.edit_text(
-        f"<b>Downloading {quality}p…</b>",
-        parse_mode=ParseMode.HTML
-    )
-
-    temp_dir = tempfile.mkdtemp(prefix="yt_dl_")
-    output_path = os.path.join(temp_dir, "%(title)s.%(ext)s")
+    temp_dir = tempfile.mkdtemp(prefix="yt_video_")
+    out_tpl = os.path.join(temp_dir, "%(title)s.%(ext)s")
 
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
-        "outtmpl": output_path,
+        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "merge_output_format": "mp4",
+        "outtmpl": out_tpl,
         "noplaylist": True,
-        "format": itag,
+        # avoid writing any cookie files
+        "nocheckcertificate": True,
     }
 
-    url = f"https://www.youtube.com/watch?v={vid}"
+    await safe_edit(progress_msg, _single_step_text(3, 5, "Downloading video (this can take a while)…"), last_edit_time_holder=last_edit_ref)
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
+            info = ydl.extract_info(video_url, download=True)
+            # if extract from a search entry, handle accordingly
+            if "entries" in info and info["entries"]:
+                entry = info["entries"][0]
+            else:
+                entry = info
 
+            # prepare filename from entry (yt_dlp gives actual filename via prepare_filename)
+            filename = ydl.prepare_filename(entry)
+            # ensure extension: if merge_output_format applied, filename may be .m4a/.mp4 etc.
             if not os.path.exists(filename):
+                # try common mp4 extension
                 alt = os.path.splitext(filename)[0] + ".mp4"
                 if os.path.exists(alt):
                     filename = alt
 
     except Exception as e:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        return await query.message.edit_text(
-            f"❌ Download failed.\n<code>{escape(str(e))}</code>",
-            parse_mode=ParseMode.HTML
-        )
-
-    await query.message.edit_text("<b>Uploading…</b>", parse_mode=ParseMode.HTML)
-
-    try:
-        with open(filename, "rb") as f:
-            await client.send_video(
-                chat_id=query.message.chat.id,
-                video=f,
-                caption=f"<b>Quality:</b> {quality}p\nhttps://youtu.be/{vid}",
-                parse_mode=ParseMode.HTML,
-                supports_streaming=True
-            )
-
-        await query.message.delete()
-
-    except Exception as e:
-        await query.message.edit_text(
-            f"❌ Upload failed.\n<code>{escape(str(e))}</code>",
-            parse_mode=ParseMode.HTML
-        )
-
-    finally:
+        await safe_edit(progress_msg, _single_step_text(3, 5, f"❌ Download failed: {escape(str(e))}"), last_edit_time_holder=last_edit_ref)
         try:
-            os.remove(filename)
+            shutil.rmtree(temp_dir)
         except:
             pass
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        return
+
+    # Step 4 — send thumbnail (download thumbnail locally if possible) and send video
+    await safe_edit(progress_msg, _single_step_text(4, 5, "Uploading to Telegram…"), last_edit_time_holder=last_edit_ref)
+
+    thumb_path = None
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(thumb_url) as t:
+                if t.status == 200:
+                    thumb_bytes = await t.read()
+                    fd2, thumb_path = tempfile.mkstemp(suffix=".jpg")
+                    os.close(fd2)
+                    with open(thumb_path, "wb") as f:
+                        f.write(thumb_bytes)
+    except:
+        thumb_path = None
+
+    try:
+        # Sending as video (will let Telegram handle streaming & thumbnails)
+        with open(filename, "rb") as vid_file:
+            await client.send_video(
+                chat_id=message.chat.id,
+                video=vid_file,
+                thumb=thumb_path if thumb_path else None,
+                caption=f"🎬 {user_query}\n\n<code>https://youtu.be/{vid}</code>",
+                supports_streaming=True,
+                parse_mode=ParseMode.HTML
+            )
+
+        await safe_edit(progress_msg, _single_step_text(5, 5, "Done — video sent."), last_edit_time_holder=last_edit_ref)
+
+    except Exception as e:
+        await safe_edit(progress_msg, _single_step_text(5, 5, f"❌ Upload failed: {escape(str(e))}"), last_edit_time_holder=last_edit_ref)
+    finally:
+        # cleanup
+        try:
+            if thumb_path:
+                os.remove(thumb_path)
+            try:
+                os.remove(filename)
+            except:
+                pass
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except:
+            pass
+
+        # try to delete progress message after a short pause
+        try:
+            await asyncio.sleep(1.0)
+            await progress_msg.delete()
+        except:
+            pass
 
 
 @handler_client.on_message(filters.command("play"))
