@@ -41,6 +41,7 @@ USERBOT_SESSION = os.getenv("USERBOT_SESSION")   # session string for user accou
 BOT_TOKEN = os.getenv("BOT_TOKEN", None)         # optional: bot account token
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
+RAPID2 = os.getenv("RAPID2")
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 TARGET_GROUP_ID = os.getenv("TARGET_GROUP_ID", None)  # optional group id to forward results to
