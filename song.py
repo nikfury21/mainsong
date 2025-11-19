@@ -495,28 +495,28 @@ async def video_command(client: Client, message: Message):
 
     query = " ".join(message.command[1:])
     if not query:
-        return await message.reply("Usage: /video <name>")
+        return await message.reply("Usage: /video <search query>")
 
     status = await message.reply("<b>Searching YouTube…</b>", parse_mode="html")
 
-    # STEP 1 — Get real YouTube ID (first recommended)
+    # STEP 1 — get the first recommended YouTube video
     video_id = await html_youtube_first(query)
     if not video_id:
-        return await status.edit("❌ No video found.", parse_mode="html")
+        return await status.edit("❌ No matching video found.", parse_mode="html")
 
-    await status.edit("<b>Fetching MP4 formats…</b>", parse_mode="html")
+    await status.edit("<b>Fetching MP4 (itag 18)…</b>", parse_mode="html")
 
-    # STEP 2 — Hit RapidAPI (ytstream)
-    api = "https://ytstream-download-youtube-videos.p.rapidapi.com/dl"
+    # STEP 2 — RapidAPI ytstream call
+    api_url = "https://ytstream-download-youtube-videos.p.rapidapi.com/dl"
     headers = {
         "X-RapidAPI-Key": RAPIDAPI_KEY,
-        "X-RapidAPI-Host": "ytstream-download-youtube-videos.p.rapidapi.com"
+        "X-RapidAPI-Host": "ytstream-download-youtube-videos.p.rapidapi.com",
     }
     params = {"id": video_id}
 
-    async with aiohttp.ClientSession() as sess:
+    async with aiohttp.ClientSession() as session:
         try:
-            async with sess.get(api, headers=headers, params=params, timeout=15) as r:
+            async with session.get(api_url, headers=headers, params=params) as r:
                 data = await r.json()
         except Exception as e:
             return await status.edit(f"❌ API Error:\n<code>{e}</code>", parse_mode="html")
@@ -524,55 +524,43 @@ async def video_command(client: Client, message: Message):
         formats = data.get("formats", [])
         mp4_link = None
 
-        # STEP 3 — Pick itag 18 (best stable)
+        # ✔ PICK EXACTLY itag 18 (always MP4 + audio, never fails)
         for fmt in formats:
             if fmt.get("itag") == 18:
                 mp4_link = fmt.get("url")
                 break
 
-        # fallback: try 22 (720p)
         if not mp4_link:
-            for fmt in formats:
-                if fmt.get("itag") == 22:
-                    mp4_link = fmt.get("url")
-                    break
-
-        # ultimate fallback: find ANY mp4 with audio
-        if not mp4_link:
-            for fmt in formats:
-                mime = fmt.get("mimeType", "").lower()
-                if mime.startswith("video/mp4") and fmt.get("audioQuality"):
-                    mp4_link = fmt.get("url")
-                    break
-
-        if not mp4_link:
-            return await status.edit("❌ No MP4 with audio found.", parse_mode="html")
+            return await status.edit(
+                "❌ No valid MP4 link found (itag 18 missing).", parse_mode="html"
+            )
 
         await status.edit("<b>Downloading…</b>", parse_mode="html")
 
-        # STEP 4 — Download robustly
-        async with sess.get(mp4_link) as resp:
+        # STEP 3 — Download video safely
+        async with session.get(mp4_link) as resp:
             if resp.status != 200:
-                return await status.edit("❌ Couldn't download file.", parse_mode="html")
+                return await status.edit("❌ Failed to download the video.", parse_mode="html")
 
-            data_bytes = await resp.read()
+            file_bytes = await resp.read()
 
-        if len(data_bytes) < 100_000:  # <100 KB = invalid
-            return await status.edit("❌ Downloaded file is invalid (0 bytes).", parse_mode="html")
+        # ✔ Prevent 0-byte file issue
+        if len(file_bytes) < 200_000:  # <200 KB definitely broken
+            return await status.edit("❌ Invalid or zero-size MP4 file.", parse_mode="html")
 
-        # Save to temp
-        fd, path = tempfile.mkstemp(suffix=".mp4")
+        # Save temporary file
+        fd, temp_path = tempfile.mkstemp(suffix=".mp4")
         os.close(fd)
-        with open(path, "wb") as f:
-            f.write(data_bytes)
+        with open(temp_path, "wb") as f:
+            f.write(file_bytes)
 
     await status.edit("<b>Uploading…</b>", parse_mode="html")
 
-    # STEP 5 — Upload to Telegram
+    # STEP 4 — upload to Telegram
     try:
         await client.send_video(
             message.chat.id,
-            video=open(path, "rb"),
+            open(temp_path, "rb"),
             caption=f"🎬 {query}",
             supports_streaming=True
         )
@@ -582,10 +570,9 @@ async def video_command(client: Client, message: Message):
         await status.edit(f"❌ Upload error:\n<code>{e}</code>", parse_mode="html")
 
     finally:
-        try:
-            os.remove(path)
-        except:
-            pass
+        try: os.remove(temp_path)
+        except: pass
+
 
 
 
