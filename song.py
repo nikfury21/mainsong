@@ -462,18 +462,29 @@ async def video_command(client: Client, message: Message):
     await msg.edit_text("Found video! Downloading fastest available MP4…")
 
     # 2. FASTEST: Download "best progressive" MP4  
-    #    (includes both video+audio → NO MERGE → 3–5× faster)
     temp_dir = tempfile.mkdtemp(prefix="fastmp4_")
     out_path = os.path.join(temp_dir, "%(title)s.%(ext)s")
 
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
-        "format": "bv*[ext=mp4][vcodec*=avc1]+ba[ext=m4a]/best[ext=mp4]/best",  
-        # ^ AVC1 progressive MP4 = fast download + compatible with Telegram
+
+        # FAST progressive + fallback
+        "format": "bv*[ext=mp4][vcodec*=avc1]+ba[ext=m4a]/best[ext=mp4]/best",
+
         "outtmpl": out_path,
         "noplaylist": True,
-        "merge_output_format": "mp4",  # merge rarely needed; progressive mostly works directly
+        "merge_output_format": "mp4",
+
+        # 🚀 MAIN FIX: FORCE ANDROID CLIENT to bypass login/bot checks
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android"],
+                "player_skip": ["web"]
+            }
+        },
+
+        "nocheckcertificate": True,
     }
 
     try:
@@ -481,7 +492,7 @@ async def video_command(client: Client, message: Message):
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
 
-            # Sometimes yt-dlp outputs m4a/mp4 separately → check fixed name
+            # Fix filename if yt-dlp renamed it
             if not os.path.exists(filename):
                 alt = os.path.splitext(filename)[0] + ".mp4"
                 if os.path.exists(alt):
