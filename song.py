@@ -434,11 +434,14 @@ async def song_command(client: Client, message: Message):
         try: await progress_msg.delete()
         except: pass
 
+# ============================================================
+# /videodebug  — unified debug for ALL RapidAPI video responses
+# ============================================================
 @handler_client.on_message(filters.command("videodebug"))
 async def videodebug(client, message):
-    import aiohttp
+    import aiohttp, json
 
-    ADMIN = 8353079084   # your Telegram ID
+    ADMIN = 8353079084
 
     query = " ".join(message.command[1:])
     if not query:
@@ -446,7 +449,7 @@ async def videodebug(client, message):
 
     await client.send_message(ADMIN, f"🔍 videodebug query = {query}")
 
-    # Step 1 — Search same as /song
+    # Step 1 — YouTube HTML search
     video_id = await html_youtube_first(query)
     await client.send_message(ADMIN, f"Found video_id = {video_id}")
 
@@ -454,13 +457,13 @@ async def videodebug(client, message):
         await client.send_message(ADMIN, "❌ No video ID found.")
         return await message.reply("No result.")
 
-    # Step 2 — RapidAPI call
-    url = "https://ytstream-download-youtube-videos.p.rapidapi.com/dl"
+    # Step 2 — Call RapidAPI
+    url = "https://youtube-media-downloader.p.rapidapi.com/v2/video/details"
     headers = {
-        "X-RapidAPI-Key": RAPIDAPI_KEY,
-        "X-RapidAPI-Host": "ytstream-download-youtube-videos.p.rapidapi.com",
+        "x-rapidapi-key": RAPIDAPI_KEY,
+        "x-rapidapi-host": "youtube-media-downloader.p.rapidapi.com",
     }
-    params = {"id": video_id}
+    params = {"videoId": video_id, "videos": "auto", "audios": "auto"}
 
     await client.send_message(ADMIN, "📡 Fetching API response…")
 
@@ -471,46 +474,44 @@ async def videodebug(client, message):
             except:
                 data = {"error": "Failed to parse JSON"}
 
-    # Step 3 — send JSON to your DM (without HTML escaping)
+    # Step 3 — Send JSON cleanly
     try:
-        await client.send_message(
-            ADMIN,
-            f"📦 API JSON Response:\n{data}",   # no HTML tags
-            parse_mode=None                  # <- IMPORTANT
-        )
+        pretty = json.dumps(data, indent=2)
+        await client.send_message(ADMIN, pretty, parse_mode=None)
     except:
-        # fallback if message too long
-        await client.send_message(ADMIN, "JSON too long, sending as file…")
-
-        with open("debug.json", "w") as f:
-            f.write(str(data))
-
+        await client.send_message(ADMIN, "JSON too long, sending file…")
+        with open("debug.json", "w", encoding="utf-8") as f:
+            f.write(pretty)
         await client.send_document(ADMIN, "debug.json")
-    
+
     await message.reply("Debug sent to your DM.")
 
+
+# ============================================================
+# /video  — Unified MP4 extractor (itag 18 priority)
+# ============================================================
 @handler_client.on_message(filters.command("video"))
 async def video_command(client: Client, message: Message):
     import aiohttp, tempfile, os, traceback
     from pyrogram.enums import ParseMode
 
-    ADMIN = 8353079084   # your Telegram ID
+    ADMIN = 8353079084
+    query = " ".join(message.command[1:]).strip()
 
-    query = " ".join(message.command[1:])
     if not query:
         return await message.reply("Usage: /video <query>")
 
     try:
         status = await message.reply("<b>Searching…</b>", parse_mode=ParseMode.HTML)
 
-        # STEP 1 — first YouTube recommended video
+        # STEP 1 — Get YouTube ID
         video_id = await html_youtube_first(query)
         if not video_id:
             return await status.edit("❌ No YouTube results found.", parse_mode=ParseMode.HTML)
 
-        await status.edit("<b>Fetching direct MP4 link…</b>", parse_mode=ParseMode.HTML)
+        await status.edit("<b>Fetching MP4 link…</b>", parse_mode=ParseMode.HTML)
 
-        # STEP 2 — Call RapidAPI DataFanatic
+        # STEP 2 — RapidAPI video details
         url = "https://youtube-media-downloader.p.rapidapi.com/v2/video/details"
         headers = {
             "x-rapidapi-host": "youtube-media-downloader.p.rapidapi.com",
@@ -518,9 +519,9 @@ async def video_command(client: Client, message: Message):
         }
         params = {
             "videoId": video_id,
-            "urlAccess": "normal",
             "videos": "auto",
             "audios": "auto",
+            "urlAccess": "normal"
         }
 
         async with aiohttp.ClientSession() as session:
@@ -529,32 +530,55 @@ async def video_command(client: Client, message: Message):
                     raise Exception(f"API error: {r.status}")
                 data = await r.json()
 
-        # STEP 3 — find itag 18 (full MP4 with audio)
-        formats = data.get("formats", [])
+        # STEP 3 — Extract ALL possible MP4 sources
+        formats = []
+
+        # direct formats
+        if "formats" in data:
+            formats.extend(data["formats"])
+
+        # nested formats (some API responses use this)
+        if "videos" in data and isinstance(data["videos"], dict):
+            items = data["videos"].get("items", [])
+            for item in items:
+                if isinstance(item, dict):
+                    if "formats" in item:
+                        formats.extend(item["formats"])
+                    if "format" in item:
+                        formats.extend(item["format"])
+
+        # STEP 4 — Find itag=18 (MP4+audio)
         mp4_url = None
 
-        for fmt in formats:
-            if str(fmt.get("itag")) == "18":
-                mp4_url = fmt.get("url")
+        for f in formats:
+            if str(f.get("itag")) == "18":
+                mp4_url = f.get("url")
                 break
 
+        # If itag18 missing → pick first MP4 with audio
         if not mp4_url:
-            raise Exception("itag 18 MP4 not found in API response.")
+            for f in formats:
+                mt = f.get("mimeType", "")
+                if "video/mp4" in mt and "audio" in mt:
+                    mp4_url = f.get("url")
+                    break
 
-        await status.edit("<b>Downloading MP4…</b>", parse_mode=ParseMode.HTML)
+        if not mp4_url:
+            raise Exception("No MP4 (itag18 or fallback) found in JSON.")
 
-        # STEP 4 — download video with retry
+        await status.edit("<b>Downloading…</b>", parse_mode=ParseMode.HTML)
+
+        # STEP 5 — Download MP4
         async with aiohttp.ClientSession() as session:
             async with session.get(mp4_url) as resp:
                 if resp.status != 200:
-                    raise Exception("Video download returned non-200.")
+                    raise Exception("Video download failed.")
                 video_bytes = await resp.read()
 
-        # Prevent 0-byte or corrupted file
         if len(video_bytes) < 300_000:
-            raise Exception("File too small (0 bytes or corrupted).")
+            raise Exception("Invalid or empty MP4 file.")
 
-        # Save to temporary file
+        # Write temp file
         fd, temp_path = tempfile.mkstemp(suffix=".mp4")
         os.close(fd)
         with open(temp_path, "wb") as f:
@@ -573,10 +597,8 @@ async def video_command(client: Client, message: Message):
         os.remove(temp_path)
 
     except Exception as e:
-        # User-safe message
         await message.reply("❌ Error occurred. Logs sent to admin.")
 
-        # Admin log
         try:
             full = "".join(traceback.format_exception(type(e), e, e.__traceback__))
             await client.send_message(
@@ -589,6 +611,7 @@ async def video_command(client: Client, message: Message):
             )
         except:
             pass
+
 
 
 
