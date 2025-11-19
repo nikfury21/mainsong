@@ -502,7 +502,7 @@ async def video_command(client: Client, message: Message):
 
     status = await message.reply_text("<b>Searching video…</b>", parse_mode=ParseMode.HTML)
 
-    # ✔ Step 1 — same YouTube search used by /song
+    # Step 1 — HTML YouTube search
     video_id = await html_youtube_first(query)
     if not video_id:
         await status.edit_text("❌ No matching video found.", parse_mode=ParseMode.HTML)
@@ -510,7 +510,6 @@ async def video_command(client: Client, message: Message):
 
     await status.edit_text("<b>Fetching MP4 link…</b>", parse_mode=ParseMode.HTML)
 
-    # ✔ Step 2 — ytstream RapidAPI request (works for MP4)
     api_url = "https://ytstream-download-youtube-videos.p.rapidapi.com/dl"
     headers = {
         "X-RapidAPI-Key": RAPIDAPI_KEY,
@@ -523,24 +522,25 @@ async def video_command(client: Client, message: Message):
             async with session.get(api_url, headers=headers, params=params) as r:
                 data = await r.json()
         except:
-            data = {}
+            await status.edit_text("❌ API request failed.", parse_mode=ParseMode.HTML)
+            return
 
         formats = data.get("formats", [])
         mp4_link = None
 
-        # find first mp4 link
+        # 100% Reliable MP4 detection
         for fmt in formats:
-            if "mp4" in fmt.get("format", "").lower():
+            mime = fmt.get("mimeType", "").lower()
+            if mime.startswith("video/mp4"):
                 mp4_link = fmt.get("url")
                 break
 
         if not mp4_link:
-            await status.edit_text("❌ Could not fetch MP4 link.", parse_mode=ParseMode.HTML)
+            await status.edit_text("❌ No MP4 format available.", parse_mode=ParseMode.HTML)
             return
 
         await status.edit_text("<b>Downloading video…</b>", parse_mode=ParseMode.HTML)
 
-        # ✔ Step 3 — Download MP4 file
         async with session.get(mp4_link) as resp:
             video_bytes = await resp.read()
 
@@ -552,7 +552,6 @@ async def video_command(client: Client, message: Message):
 
     await status.edit_text("<b>Uploading…</b>", parse_mode=ParseMode.HTML)
 
-    # ✔ Step 4 — Upload to Telegram
     try:
         await client.send_video(
             message.chat.id,
@@ -561,13 +560,16 @@ async def video_command(client: Client, message: Message):
             supports_streaming=True
         )
         await status.delete()
+
     except Exception as e:
-        await status.edit_text(
-            f"❌ Upload failed:\n<code>{e}</code>", parse_mode=ParseMode.HTML
-        )
+        await status.edit_text(f"❌ Upload failed:\n<code>{e}</code>",
+                               parse_mode=ParseMode.HTML)
+
     finally:
-        try: os.remove(temp_path)
-        except: pass
+        try:
+            os.remove(temp_path)
+        except:
+            pass
 
 
 @handler_client.on_message(filters.command("play"))
