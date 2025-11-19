@@ -492,7 +492,7 @@ async def videodebug(client, message):
 # ============================================================
 @handler_client.on_message(filters.command("video"))
 async def video_command(client: Client, message: Message):
-    import aiohttp, tempfile, os, traceback
+    import yt_dlp, tempfile, os, traceback
     from pyrogram.enums import ParseMode
 
     ADMIN = 8353079084
@@ -501,72 +501,46 @@ async def video_command(client: Client, message: Message):
     if not query:
         return await message.reply("Usage: /video <query>")
 
+    status = await message.reply("<b>Searching…</b>", parse_mode=ParseMode.HTML)
+
     try:
-        status = await message.reply("<b>Searching…</b>", parse_mode=ParseMode.HTML)
-
-        # STEP 1 — Get YouTube ID
-        video_id = await html_youtube_first(query)
-        if not video_id:
-            return await status.edit("❌ No YouTube results found.", parse_mode=ParseMode.HTML)
-
-        await status.edit("<b>Fetching MP4 link…</b>", parse_mode=ParseMode.HTML)
-
-        # STEP 2 — Use API B (ytstream)
-        url = "https://ytstream-download-youtube-videos.p.rapidapi.com/dl"
-        headers = {
-            "X-RapidAPI-Key": RAPIDAPI_KEY,
-            "X-RapidAPI-Host": "ytstream-download-youtube-videos.p.rapidapi.com",
+        # STEP 1 — Use yt-dlp's built-in search
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "format": "mp4[height<=720]/mp4/best",
+            "outtmpl": "%(id)s.%(ext)s",
         }
-        params = {"id": video_id}
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, params=params) as r:
-                if r.status != 200:
-                    raise Exception(f"API error: {r.status}")
-                data = await r.json()
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+            if "entries" in info:
+                info = info["entries"][0]
 
-        # STEP 3 — Find the best MP4 link
-        mp4_url = None
-
-        # API response: data["link"] contains list of qualities
-        for item in data.get("link", []):
-            if item.get("type") == "mp4" and "audio" in item.get("quality", "").lower():
-                mp4_url = item.get("url")
-                break
-
-        # fallback → any mp4
-        if not mp4_url:
-            for item in data.get("link", []):
-                if item.get("type") == "mp4":
-                    mp4_url = item.get("url")
-                    break
-
-        if not mp4_url:
-            raise Exception("No MP4 link found in API response.")
+            video_id = info["id"]
 
         await status.edit("<b>Downloading…</b>", parse_mode=ParseMode.HTML)
 
-        # STEP 4 — Download MP4
-        async with aiohttp.ClientSession() as session:
-            async with session.get(mp4_url) as resp:
-                if resp.status != 200:
-                    raise Exception("Video download failed.")
-                video_bytes = await resp.read()
-
-        if len(video_bytes) < 100_000:
-            raise Exception("Invalid/empty MP4 file.")
-
-        # Save file
+        # STEP 2 — Download MP4
         fd, temp_path = tempfile.mkstemp(suffix=".mp4")
         os.close(fd)
-        with open(temp_path, "wb") as f:
-            f.write(video_bytes)
+
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "format": "mp4[height<=720]/mp4/best",
+            "outtmpl": temp_path,
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
 
         await status.edit("<b>Uploading…</b>", parse_mode=ParseMode.HTML)
 
+        # STEP 3 — Send to Telegram
         await client.send_video(
             message.chat.id,
-            open(temp_path, "rb"),
+            temp_path,
             caption=f"🎬 {query}",
             supports_streaming=True
         )
@@ -576,21 +550,12 @@ async def video_command(client: Client, message: Message):
 
     except Exception as e:
         await message.reply("❌ Error occurred. Logs sent to admin.")
-
-        try:
-            full = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-            await client.send_message(
-                ADMIN,
-                f"⚠ ERROR IN /video\n\n"
-                f"Query: {query}\n"
-                f"Chat: {message.chat.id}\n\n"
-                f"Traceback:\n<code>{full}</code>",
-                parse_mode=ParseMode.HTML
-            )
-        except:
-            pass
-
-
+        full = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+        await client.send_message(
+            ADMIN,
+            f"⚠ ERROR IN /video\n\nQuery: {query}\nChat: {message.chat.id}\n\n<code>{full}</code>",
+            parse_mode=ParseMode.HTML
+        )
 
 
 
