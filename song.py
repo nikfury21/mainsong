@@ -1169,7 +1169,8 @@ def main():
     stop_event = asyncio.Event()
 
     def stop_handler(*_):
-        loop.create_task(stop_event.set())
+        loop.call_soon_threadsafe(stop_event.set)
+
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop_handler)
