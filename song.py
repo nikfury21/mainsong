@@ -534,21 +534,32 @@ async def video_command(client: Client, message: Message):
                     merged_url = j.get("url")
 
         # ==========================================================
-        # TRY 2 — Fallback /download
+        # TRY 2 — Stable fallback (YouTube Media Downloader)
         # ==========================================================
         if not merged_url:
             await status.edit("Mux failed… falling back…")
-
-            dl_url = "https://cloud-api-hub-youtube-downloader.p.rapidapi.com/download"
+        
+            dl_url = "https://youtube-media-downloader.p.rapidapi.com/v2/video/details"
             dl_headers = {
-                "x-rapidapi-host": "cloud-api-hub-youtube-downloader.p.rapidapi.com",
+                "x-rapidapi-host": "youtube-media-downloader.p.rapidapi.com",
                 "x-rapidapi-key": RAPID2,
             }
-            dl_params = {"id": video_id}
-
+            dl_params = {"videoId": video_id}
+        
             async with aiohttp.ClientSession() as s:
                 async with s.get(dl_url, headers=dl_headers, params=dl_params) as r:
-                    streams = await r.json()
+                    j = await r.json()
+        
+            # Extract streams
+            formats = j.get("videos", [])
+            audios = j.get("audios", [])
+        
+            video_only = max([f for f in formats if f.get("quality")], key=lambda x: x.get("qualityValue", 0), default=None)
+            audio_only = max(audios, key=lambda x: x.get("bitrate", 0), default=None)
+        
+            if not video_only or not audio_only:
+                raise Exception("No audio/video streams found in fallback provider")
+
 
             video_only = None
             audio_only = None
