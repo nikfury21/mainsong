@@ -933,38 +933,7 @@ async def callback_handler(client, cq: CallbackQuery):
     else:
         await cq.answer()
 
-import urllib.parse
-import json
-import aiohttp
 
-@handler_client.on_message(filters.command("video"))
-async def video_cmd(client, message):
-    query = " ".join(message.command[1:])
-    if not query:
-        return await message.reply_text("Use /video <query>")
-
-    msg = await message.reply_text("Searching…")
-
-    # use your existing search function
-    video_id = await html_youtube_first(query)
-    if not video_id:
-        return await msg.edit("No results found.")
-
-    await msg.edit("Uploading…")
-
-    backend = "https://sapi-fbeh.onrender.com"   # YOUR backend
-    url = f"{backend}/video?id={video_id}"
-
-    try:
-        await client.send_video(
-            chat_id=message.chat.id,
-            video=url,
-            caption=f"🎬 {query}\nhttps://youtu.be/{video_id}",
-            supports_streaming=True
-        )
-        await msg.delete()
-    except Exception as e:
-        await msg.edit(f"Failed: `{e}`")
 
 
 # -------------------------
