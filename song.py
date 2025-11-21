@@ -961,8 +961,7 @@ async def search_youtube_video_id(session, query):
         return None
 
 
-
-@Client.on_message(filters.command("video"))
+@handler_client.on_message(filters.command("video"))
 async def video_cmd(client, message):
     query = " ".join(message.command[1:])
     if not query:
@@ -979,7 +978,6 @@ async def video_cmd(client, message):
     yt_url = f"https://youtube.com/watch?v={video_id}"
     await msg.edit("⏳ Fetching MP4 download link…")
 
-    # --- YouTube Download API ---
     api = "https://youtube-download-api.org/api/v1/download"
     headers = {
         "Authorization": f"Bearer {YOUTUBE_DL_API_KEY}",
@@ -987,7 +985,7 @@ async def video_cmd(client, message):
     }
     body = {
         "url": yt_url,
-        "format": "720"     # choose 1080 / 720 / 480
+        "format": "720"
     }
 
     async with aiohttp.ClientSession() as s:
@@ -997,8 +995,7 @@ async def video_cmd(client, message):
     if "url" not in data:
         return await msg.edit("❌ Could not get MP4 URL from API.")
 
-    mp4_url = data["url"]   # direct mp4 link
-    filename = data.get("filename", "video.mp4")
+    mp4_url = data["url"]
 
     await msg.edit("📤 Uploading to Telegram…")
 
@@ -1013,7 +1010,6 @@ async def video_cmd(client, message):
 
     except Exception as e:
         await msg.edit(f"❌ Upload failed:\n`{e}`")
-
 
 # -------------------------
 # Startup / shutdown helpers
