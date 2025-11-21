@@ -963,12 +963,25 @@ async def search_youtube_video_id(session, query):
 
 from pyrogram.enums import ParseMode
 import traceback
+import aiohttp
+import os
+
+ADMIN = 8353079084
 
 
+# -------------- Error File Sender --------------
+async def send_error_file(client, admin_id, filename, content):
+    path = f"/tmp/{filename}"
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+    await client.send_document(admin_id, path)
+    os.remove(path)
+
+
+# -------------- /video Command ----------------
 @handler_client.on_message(filters.command("video"))
 async def video_cmd(client, message):
-    ADMIN = 8353079084
-
     query = " ".join(message.command[1:])
     if not query:
         return await message.reply_text("Use /video <query>")
@@ -976,23 +989,20 @@ async def video_cmd(client, message):
     msg = await message.reply_text("🔍 Searching…")
 
     try:
+        # ---------------- Search Video ----------------
         async with aiohttp.ClientSession() as session:
             vid = await search_youtube_video_id(session, query)
 
         if not vid:
-            await client.send_message(
-                ADMIN,
-                f"❌ VIDEO ERROR: No YouTube results for query:\n`{query}`"
-            )
+            await client.send_message(ADMIN, f"No results: {query}")
             return await msg.edit("❌ No YouTube results found.")
 
+        # ---------------- Fetch from RapidAPI ----------------
         api = "https://ytstream-download-youtube-videos.p.rapidapi.com/dl"
-
         headers = {
             "x-rapidapi-key": RAPIDAPI_KEY,
             "x-rapidapi-host": "ytstream-download-youtube-videos.p.rapidapi.com"
         }
-
         params = {"id": vid}
 
         async with aiohttp.ClientSession() as s:
@@ -1004,19 +1014,21 @@ async def video_cmd(client, message):
                 except:
                     data = None
 
-        await client.send_message(
+        # Admin logs → as file
+        await send_error_file(
+            client,
             ADMIN,
-            f"📡 <b>YTStream API Response</b>\n"
-            f"• Query: <code>{query}</code>\n"
-            f"• Video ID: <code>{vid}</code>\n"
-            f"• Status: <code>{status}</code>\n"
-            f"• Raw:\n<code>{text_body[:4000]}</code>",
-            parse_mode=ParseMode.HTML
+            "ytstream_debug.txt",
+            f"Query: {query}\n"
+            f"Video ID: {vid}\n"
+            f"Status: {status}\n\n"
+            f"Raw Body:\n{text_body}"
         )
 
         if not data:
             return await msg.edit("❌ API error — empty response.")
 
+        # ---------------- Find MP4 URL ----------------
         mp4_url = None
         for fmt in data.get("formats", []):
             if "mp4" in fmt.get("mimeType", "").lower() and "url" in fmt:
@@ -1024,45 +1036,45 @@ async def video_cmd(client, message):
                 break
 
         if not mp4_url:
-            await client.send_message(
-                ADMIN,
-                f"❌ <b>NO MP4 FORMAT</b>\nVideo ID: `{vid}`\nAPI Response:\n<code>{text_body[:4000]}</code>",
-                parse_mode=ParseMode.HTML
+            await send_error_file(
+                client, ADMIN, "no_mp4_found.txt",
+                f"Video ID: {vid}\n\nResponse:\n{text_body}"
             )
-            return await msg.edit("❌ No MP4 format found for this video.")
+            return await msg.edit("❌ No MP4 format found.")
 
         await msg.edit("📤 Uploading…")
 
+        # ---------------- Upload to Telegram ----------------
         try:
             await client.send_video(
                 message.chat.id,
                 mp4_url,
                 supports_streaming=True,
-                caption=f"🎬 {query}\nhttps://youtu.be/{vid}",
+                caption=f"🎬 {query}\nhttps://youtu.be/{vid}"
             )
             await msg.delete()
 
         except Exception as e:
             tb = traceback.format_exc()
-            await client.send_message(
+            await send_error_file(
+                client,
                 ADMIN,
-                f"❌ <b>TELEGRAM UPLOAD ERROR</b>\n"
-                f"• URL: <code>{mp4_url}</code>\n"
-                f"• Exception: <code>{str(e)}</code>\n\n"
-                f"<b>Traceback:</b>\n<code>{tb}</code>",
-                parse_mode=ParseMode.HTML
+                "telegram_upload_error.txt",
+                f"Video URL: {mp4_url}\n"
+                f"Exception: {e}\n\n"
+                f"Traceback:\n{tb}"
             )
             await msg.edit(f"❌ Telegram rejected the video:\n`{e}`")
 
     except Exception as e:
         tb = traceback.format_exc()
-        await client.send_message(
+        await send_error_file(
+            client,
             ADMIN,
-            f"❌ <b>UNCAUGHT /video ERROR</b>\n"
-            f"• Query: <code>{query}</code>\n"
-            f"• Exception: <code>{str(e)}</code>\n\n"
-            f"<b>Traceback:</b>\n<code>{tb}</code>",
-            parse_mode=ParseMode.HTML
+            "uncaught_video_error.txt",
+            f"Query: {query}\n"
+            f"Exception: {e}\n\n"
+            f"Traceback:\n{tb}"
         )
         await msg.edit("❌ Unexpected error occurred.")
 
