@@ -963,157 +963,83 @@ async def search_youtube_video_id(session, query):
 
 
 
-from pyrogram.enums import ParseMode
-import aiohttp
-import traceback
-import os
-
-ADMIN = 8353079084
-
-
-async def send_error_file(client, admin_id, filename, content):
-    path = f"/tmp/{filename}"
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
-    await client.send_document(admin_id, path)
-    os.remove(path)
-
-
-from pyrogram.enums import ParseMode
-import traceback
-import aiohttp
-
-ADMIN = 8353079084
-
-
 @handler_client.on_message(filters.command("video"))
-async def video_cmd(client, message):
+async def video_cmd(client: Client, message: Message):
     query = " ".join(message.command[1:])
     if not query:
-        return await message.reply_text("Use /video <query>")
+        return await message.reply_text("🔍 Usage: <code>/video <song name or youtube title></code>", parse_mode=ParseMode.HTML)
 
-    msg = await message.reply_text("🔍 Searching…")
+    status = await message.reply_text("🔍 <b>Searching YouTube...</b>", parse_mode=ParseMode.HTML)
 
     try:
-        # STEP 1 — Search YouTube Video
-        async with aiohttp.ClientSession() as session:
-            vid = await search_youtube_video_id(session, query)
+        # ───── Step 1: Get top YouTube video ID (same reliable method as /play) ─────
+        video_id = await html_youtube_first(query)
+        if not video_id:
+            return await status.edit("❌ No YouTube results found.")
 
-        if not vid:
-            await msg.edit("❌ No YouTube results found.")
-            await client.send_message(ADMIN, f"❌ No YT results for query: `{query}`")
-            return
+        video_url = f"https://youtu.be/{video_id}"
+        thumb_url = f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
 
-        # STEP 2 — Request SMVD via RapidAPI
-        api = "https://youtube-video-and-shorts-downloader1.p.rapidapi.com/youtube/v3/video/details"
-        headers = {
-            "x-rapidapi-key": RAPIDAPI_KEY,
-            "x-rapidapi-host": "youtube-video-and-shorts-downloader1.p.rapidapi.com"
+        await status.edit(f"✅ Found: <code>{video_id}</code>\n📥 <b>Extracting best video+audio stream...</b>", parse_mode=ParseMode.HTML)
+
+        # ───── Step 2: Use yt-dlp to get direct streamable MP4 (free & no cookies) ─────
+        ydl_opts = {
+            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "quiet": True,
+            "no_warnings": True,
+            "merge_output_format": "mp4",
+            "nocheckcertificate": True,
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
         }
-        params = {
-            "videoId": vid,
-            "renderableFormats": "highres,1080p,720p,480p,360p",
-            "urlAccess": "proxied",
-            "getTranscript": "false"
-        }
 
-        async with aiohttp.ClientSession() as s:
-            async with s.get(api, headers=headers, params=params) as r:
-                status = r.status
-                text_body = await r.text()
-                try:
-                    data = await r.json()
-                except:
-                    data = None
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video_url, download=False)
+            direct_url = info.get("url") or info.get("requested_formats")[0]["url"] if info.get("requested_formats") else None
+            title = info.get("title", query)
+            duration = info.get("duration", 0)
+            readable_dur = format_time(duration) if duration else "LIVE"
 
-        # ADMIN DEBUG (split logs to avoid MESSAGE_TOO_LONG)
-        part1 = text_body[:3500]
-        part2 = text_body[3500:7000]
+        if not direct_url:
+            return await status.edit("❌ Could not extract a playable video stream.")
 
-        await client.send_message(
-            ADMIN,
-            f"📡 <b>YT API DEBUG</b>\n"
-            f"Query: <code>{query}</code>\n"
-            f"ID: <code>{vid}</code>\n"
-            f"Status: <code>{status}</code>\n"
-            f"Raw (part 1):\n<code>{part1}</code>",
+        await status.edit(
+            f"📤 <b>Uploading video...</b>\n"
+            f"🎥 <b>Title:</b> <i>{title}</i>\n"
+            f"⏱ <b>Duration:</b> <code>{readable_dur}</code>",
             parse_mode=ParseMode.HTML
         )
 
-        if part2.strip():
-            await client.send_message(
-                ADMIN,
-                f"📡 <b>Raw (part 2)</b>\n<code>{part2}</code>",
-                parse_mode=ParseMode.HTML
-            )
+        # ───── Step 3: Send as streamable video ─────
+        await client.send_video(
+            chat_id=message.chat.id,
+            video=direct_url,
+            caption=f"🎬 <b>{title}</b>\n\n🔗 {video_url}\n💡 Requested by {message.from_user.mention}",
+            duration=duration,
+            width=info.get("width"),
+            height=info.get("height"),
+            thumb=thumb_url,
+            supports_streaming=True,
+            parse_mode=ParseMode.HTML,
+            reply_to_message_id=message.id
+        )
 
-        if not data:
-            return await msg.edit("❌ API error — empty response.")
-
-        # STEP 3 — Pick ONLY MP4 + has_audio formats
-        mp4_url = None
-        chosen_label = None
-
-        try:
-            videos = data["contents"][0]["videos"]
-        except:
-            return await msg.edit("❌ No valid video formats found.")
-
-        for item in videos:
-            mime = item.get("metadata", {}).get("mime_type", "")
-            has_audio = item.get("metadata", {}).get("has_audio")
-            url = item.get("url")
-
-            if url and "mp4" in mime.lower() and has_audio is True:
-                mp4_url = url
-                chosen_label = item.get("label")
-                break
-
-        if not mp4_url:
-            await msg.edit("❌ No MP4+audio format available.")
-            await client.send_message(
-                ADMIN,
-                f"❌ NO MP4 FORMAT\nVideo ID: `{vid}`",
-                parse_mode=ParseMode.HTML
-            )
-            return
-
-        # STEP 4 — Upload to Telegram
-        await msg.edit(f"📤 Uploading… ({chosen_label})")
-
-        try:
-            await client.send_video(
-                message.chat.id,
-                mp4_url,
-                supports_streaming=True,
-                caption=f"🎬 {query}\nhttps://youtu.be/{vid}"
-            )
-            await msg.delete()
-
-        except Exception as e:
-            tb = traceback.format_exc()
-            await client.send_message(
-                ADMIN,
-                f"❌ <b>TELEGRAM UPLOAD ERROR</b>\n"
-                f"URL: <code>{mp4_url}</code>\n\n"
-                f"<b>Exception:</b>\n<code>{str(e)}</code>\n\n"
-                f"<b>Traceback:</b>\n<code>{tb}</code>",
-                parse_mode=ParseMode.HTML
-            )
-            await msg.edit("❌ Telegram rejected the video.")
+        await status.delete()
 
     except Exception as e:
-        tb = traceback.format_exc()
-        await client.send_message(
-            ADMIN,
-            f"❌ <b>UNCAUGHT /video ERROR</b>\n"
-            f"Query: <code>{query}</code>\n\n"
-            f"Exception:\n<code>{str(e)}</code>\n\n"
-            f"Traceback:\n<code>{tb}</code>",
-            parse_mode=ParseMode.HTML
-        )
-        await msg.edit("❌ Unexpected error occurred.")
-
+        log.error(f"/video error: %s", e)
+        try:
+            await status.edit("❌ Failed to send video. Try again later.")
+        except:
+            pass
+        # Optional: send error to admin
+        if message.from_user.id in MODS:
+            await client.send_message(
+                ADMIN,
+                f"❌ <b>/video failed</b>\nQuery: <code>{query}</code>\nError: <code>{e}</code>",
+                parse_mode=ParseMode.HTML
+            )
 
 # -------------------------
 # Startup / shutdown helpers
