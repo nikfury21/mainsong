@@ -934,6 +934,35 @@ async def callback_handler(client, cq: CallbackQuery):
         await cq.answer()
 
 
+@handler_client.on_message(filters.command("video"))
+async def video_cmd(client, message):
+    query = " ".join(message.command[1:])
+    if not query:
+        return await message.reply_text("Use /video <query>")
+
+    msg = await message.reply_text("Searching…")
+
+    async with aiohttp.ClientSession() as session:
+        video_id = await search_youtube_video_id(session, query)
+
+    if not video_id:
+        return await msg.edit("No results found.")
+
+    await msg.edit("Uploading…")
+
+    backend = "https://sapi-fbeh.onrender.com"
+    url = f"{backend}/video?id={video_id}"
+
+    try:
+        await client.send_video(
+            chat_id=message.chat.id,
+            video=url,
+            caption=f"🎬 {query}\nhttps://youtu.be/{video_id}",
+            supports_streaming=True
+        )
+        await msg.delete()
+    except Exception as e:
+        await msg.edit(f"Failed: `{e}`")
 
 
 # -------------------------
