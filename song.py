@@ -979,88 +979,108 @@ async def send_error_file(client, admin_id, filename, content):
     os.remove(path)
 
 
+from pyrogram.enums import ParseMode
+import traceback
+import aiohttp
+
+ADMIN = 8353079084
+
+
 @handler_client.on_message(filters.command("video"))
 async def video_cmd(client, message):
     query = " ".join(message.command[1:])
     if not query:
-        return await message.reply_text("Use: /video <query>")
+        return await message.reply_text("Use /video <query>")
 
     msg = await message.reply_text("🔍 Searching…")
 
     try:
-        # STEP 1 — Search on YouTube
-        async with aiohttp.ClientSession() as s:
-            vid = await search_youtube_video_id(s, query)
+        # STEP 1 — Search YouTube Video
+        async with aiohttp.ClientSession() as session:
+            vid = await search_youtube_video_id(session, query)
 
         if not vid:
-            return await msg.edit("❌ No results found.")
+            await msg.edit("❌ No YouTube results found.")
+            await client.send_message(ADMIN, f"❌ No YT results for query: `{query}`")
+            return
 
-        # STEP 2 — Fetch proxy download info
+        # STEP 2 — Request SMVD via RapidAPI
         api = "https://youtube-video-and-shorts-downloader1.p.rapidapi.com/youtube/v3/video/details"
-
-        params = {
-            "videoId": vid,
-            "renderableFormats": "highres,2160p,1440p,1080p,720p,480p,360p",
-            "urlAccess": "proxied",
-            "getTranscript": "false"
-        }
-
         headers = {
             "x-rapidapi-key": RAPIDAPI_KEY,
             "x-rapidapi-host": "youtube-video-and-shorts-downloader1.p.rapidapi.com"
+        }
+        params = {
+            "videoId": vid,
+            "renderableFormats": "highres,1080p,720p,480p,360p",
+            "urlAccess": "proxied",
+            "getTranscript": "false"
         }
 
         async with aiohttp.ClientSession() as s:
             async with s.get(api, headers=headers, params=params) as r:
                 status = r.status
-                raw = await r.text()
+                text_body = await r.text()
                 try:
                     data = await r.json()
                 except:
                     data = None
 
-        # DEBUG → send raw API dump
-        await send_error_file(
-            client,
+        # ADMIN DEBUG (split logs to avoid MESSAGE_TOO_LONG)
+        part1 = text_body[:3500]
+        part2 = text_body[3500:7000]
+
+        await client.send_message(
             ADMIN,
-            "yt_api_debug.txt",
-            f"Query: {query}\nID: {vid}\nStatus: {status}\n\n{raw}"
+            f"📡 <b>YT API DEBUG</b>\n"
+            f"Query: <code>{query}</code>\n"
+            f"ID: <code>{vid}</code>\n"
+            f"Status: <code>{status}</code>\n"
+            f"Raw (part 1):\n<code>{part1}</code>",
+            parse_mode=ParseMode.HTML
         )
 
-        if not data or "contents" not in data:
-            return await msg.edit("❌ API returned no data.")
+        if part2.strip():
+            await client.send_message(
+                ADMIN,
+                f"📡 <b>Raw (part 2)</b>\n<code>{part2}</code>",
+                parse_mode=ParseMode.HTML
+            )
 
-        videos = data["contents"][0].get("videos", [])
-        if not videos:
-            return await msg.edit("❌ No video formats available.")
+        if not data:
+            return await msg.edit("❌ API error — empty response.")
 
-        # STEP 3 — Auto choose highest quality MP4 proxy URL
-        quality_order = [
-            "2160p60", "2160p",
-            "1440p60", "1440p",
-            "1080p60", "1080p",
-            "720p60", "720p",
-            "480p", "360p"
-        ]
-
+        # STEP 3 — Pick ONLY MP4 + has_audio formats
         mp4_url = None
         chosen_label = None
 
-        for q in quality_order:
-            for item in videos:
-                if item.get("label") == q and item.get("url"):
-                    mp4_url = item["url"]
-                    chosen_label = q
-                    break
-            if mp4_url:
+        try:
+            videos = data["contents"][0]["videos"]
+        except:
+            return await msg.edit("❌ No valid video formats found.")
+
+        for item in videos:
+            mime = item.get("metadata", {}).get("mime_type", "")
+            has_audio = item.get("metadata", {}).get("has_audio")
+            url = item.get("url")
+
+            if url and "mp4" in mime.lower() and has_audio is True:
+                mp4_url = url
+                chosen_label = item.get("label")
                 break
 
         if not mp4_url:
-            return await msg.edit("❌ No MP4 proxy stream found.")
+            await msg.edit("❌ No MP4+audio format available.")
+            await client.send_message(
+                ADMIN,
+                f"❌ NO MP4 FORMAT\nVideo ID: `{vid}`",
+                parse_mode=ParseMode.HTML
+            )
+            return
 
-        await msg.edit(f"📤 Uploading ({chosen_label})…")
+        # STEP 4 — Upload to Telegram
+        await msg.edit(f"📤 Uploading… ({chosen_label})")
 
-        # STEP 4 — Send Video to Telegram
         try:
             await client.send_video(
                 message.chat.id,
@@ -1072,21 +1092,25 @@ async def video_cmd(client, message):
 
         except Exception as e:
             tb = traceback.format_exc()
-            await send_error_file(
-                client,
+            await client.send_message(
                 ADMIN,
-                "tg_video_error.txt",
-                f"URL: {mp4_url}\n\nException:\n{e}\n\n{tb}"
+                f"❌ <b>TELEGRAM UPLOAD ERROR</b>\n"
+                f"URL: <code>{mp4_url}</code>\n\n"
+                f"<b>Exception:</b>\n<code>{str(e)}</code>\n\n"
+                f"<b>Traceback:</b>\n<code>{tb}</code>",
+                parse_mode=ParseMode.HTML
             )
             await msg.edit("❌ Telegram rejected the video.")
 
     except Exception as e:
         tb = traceback.format_exc()
-        await send_error_file(
-            client,
+        await client.send_message(
             ADMIN,
-            "video_uncaught.txt",
-            f"Query: {query}\nException:\n{e}\n\n{tb}"
+            f"❌ <b>UNCAUGHT /video ERROR</b>\n"
+            f"Query: <code>{query}</code>\n\n"
+            f"Exception:\n<code>{str(e)}</code>\n\n"
+            f"Traceback:\n<code>{tb}</code>",
+            parse_mode=ParseMode.HTML
         )
         await msg.edit("❌ Unexpected error occurred.")
 
