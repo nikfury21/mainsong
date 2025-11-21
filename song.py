@@ -1016,7 +1016,7 @@ async def video_cmd(client, message):
             f"• Video ID: <code>{vid}</code>\n"
             f"• Status: <code>{status}</code>\n"
             f"• Raw:\n<code>{text_body[:4000]}</code>",
-            parse_mode="html"
+            parse_mode="HTML"
         )
 
         if not data:
@@ -1033,7 +1033,7 @@ async def video_cmd(client, message):
             await client.send_message(
                 ADMIN,
                 f"❌ <b>NO MP4 FORMAT</b>\nVideo ID: `{vid}`\nAPI Response:\n<code>{text_body[:4000]}</code>",
-                parse_mode="html"
+                parse_mode="HTML"
             )
             return await msg.edit("❌ No MP4 format found for this video.")
 
@@ -1057,7 +1057,7 @@ async def video_cmd(client, message):
                 f"• URL: <code>{mp4_url}</code>\n"
                 f"• Exception: <code>{str(e)}</code>\n\n"
                 f"<b>Traceback:</b>\n<code>{tb}</code>",
-                parse_mode="html"
+                parse_mode="HTML"
             )
             await msg.edit(f"❌ Telegram rejected the video:\n`{e}`")
 
@@ -1069,7 +1069,7 @@ async def video_cmd(client, message):
             f"• Query: <code>{query}</code>\n"
             f"• Exception: <code>{str(e)}</code>\n\n"
             f"<b>Traceback:</b>\n<code>{tb}</code>",
-            parse_mode="html"
+            parse_mode="HTML"
         )
         await msg.edit("❌ Unexpected error occurred.")
 
