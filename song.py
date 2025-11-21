@@ -983,24 +983,24 @@ async def send_error_file(client, admin_id, filename, content):
 async def video_cmd(client, message):
     query = " ".join(message.command[1:])
     if not query:
-        return await message.reply_text("Use /video <query>")
+        return await message.reply_text("Use: /video <query>")
 
     msg = await message.reply_text("🔍 Searching…")
 
     try:
-        # Step 1 — Search YouTube
+        # STEP 1 — Search on YouTube
         async with aiohttp.ClientSession() as s:
             vid = await search_youtube_video_id(s, query)
 
         if not vid:
-            return await msg.edit("❌ No YouTube results found.")
+            return await msg.edit("❌ No results found.")
 
-        # Step 2 — API request
+        # STEP 2 — Fetch proxy download info
         api = "https://youtube-video-and-shorts-downloader1.p.rapidapi.com/youtube/v3/video/details"
 
         params = {
             "videoId": vid,
-            "renderableFormats": "highres,1080p,720p,480p,360p",
+            "renderableFormats": "highres,2160p,1440p,1080p,720p,480p,360p",
             "urlAccess": "proxied",
             "getTranscript": "false"
         }
@@ -1019,48 +1019,54 @@ async def video_cmd(client, message):
                 except:
                     data = None
 
-        # Debug log → send file
+        # DEBUG → send raw API dump
         await send_error_file(
             client,
             ADMIN,
             "yt_api_debug.txt",
-            f"Query: {query}\n"
-            f"ID: {vid}\n"
-            f"Status: {status}\n\n"
-            f"{raw}"
+            f"Query: {query}\nID: {vid}\nStatus: {status}\n\n{raw}"
         )
 
-        if not data:
+        if not data or "contents" not in data:
             return await msg.edit("❌ API returned no data.")
 
-        formats = data.get("streamingData", [])
-        if not formats:
-            return await msg.edit("❌ No formats available.")
+        videos = data["contents"][0].get("videos", [])
+        if not videos:
+            return await msg.edit("❌ No video formats available.")
 
-        # Step 3 — Pick best MP4
-        quality_order = ["highres", "1080p", "720p", "480p", "360p"]
+        # STEP 3 — Auto choose highest quality MP4 proxy URL
+        quality_order = [
+            "2160p60", "2160p",
+            "1440p60", "1440p",
+            "1080p60", "1080p",
+            "720p60", "720p",
+            "480p", "360p"
+        ]
 
         mp4_url = None
+        chosen_label = None
+
         for q in quality_order:
-            for fmt in formats:
-                if fmt.get("quality") == q and fmt.get("proxyUrl"):
-                    mp4_url = fmt["proxyUrl"]
+            for item in videos:
+                if item.get("label") == q and item.get("url"):
+                    mp4_url = item["url"]
+                    chosen_label = q
                     break
             if mp4_url:
                 break
 
         if not mp4_url:
-            return await msg.edit("❌ No playable MP4 link found.")
+            return await msg.edit("❌ No MP4 proxy stream found.")
 
-        await msg.edit("📤 Uploading…")
+        await msg.edit(f"📤 Uploading ({chosen_label})…")
 
-        # Step 4 — Send to Telegram
+        # STEP 4 — Send Video to Telegram
         try:
             await client.send_video(
                 message.chat.id,
                 mp4_url,
                 supports_streaming=True,
-                caption=f"🎬 {query}\nhttps://youtu.be/{vid}",
+                caption=f"🎬 {query}\nhttps://youtu.be/{vid}"
             )
             await msg.delete()
 
@@ -1069,9 +1075,8 @@ async def video_cmd(client, message):
             await send_error_file(
                 client,
                 ADMIN,
-                "telegram_video_error.txt",
-                f"URL: {mp4_url}\n\n"
-                f"Exception: {e}\n\nTraceback:\n{tb}"
+                "tg_video_error.txt",
+                f"URL: {mp4_url}\n\nException:\n{e}\n\n{tb}"
             )
             await msg.edit("❌ Telegram rejected the video.")
 
@@ -1080,11 +1085,10 @@ async def video_cmd(client, message):
         await send_error_file(
             client,
             ADMIN,
-            "video_uncaught_error.txt",
-            f"Query: {query}\n"
-            f"Exception: {e}\n\nTraceback:\n{tb}"
+            "video_uncaught.txt",
+            f"Query: {query}\nException:\n{e}\n\n{tb}"
         )
-        await msg.edit("❌ Unexpected error.")
+        await msg.edit("❌ Unexpected error occurred.")
 
 
 # -------------------------
