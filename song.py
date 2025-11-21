@@ -961,55 +961,118 @@ async def search_youtube_video_id(session, query):
         return None
 
 
+import traceback
+
+YTSTREAM_API_KEY = os.getenv("RAPIDAPI_KEY")   # using your existing key
+
 @handler_client.on_message(filters.command("video"))
 async def video_cmd(client, message):
+    ADMIN = 8353079084  # <-- already in your code
+
     query = " ".join(message.command[1:])
     if not query:
-        return await message.reply_text("Use: `/video <song or video name>`")
+        return await message.reply_text("Use /video <query>")
 
-    msg = await message.reply_text("🔍 Searching YouTube…")
-
-    async with aiohttp.ClientSession() as session:
-        video_id = await search_youtube_video_id(session, query)
-
-    if not video_id:
-        return await msg.edit("❌ No YouTube results found.")
-    
-    yt_url = f"https://youtube.com/watch?v={video_id}"
-    await msg.edit("⏳ Fetching MP4 download link…")
-
-    api = "https://youtube-download-api.org/api/v1/download"
-    headers = {
-        "Authorization": f"Bearer {YOUTUBE_DL_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    body = {
-        "url": yt_url,
-        "format": "720"
-    }
-
-    async with aiohttp.ClientSession() as s:
-        async with s.post(api, headers=headers, json=body) as r:
-            data = await r.json()
-
-    if "url" not in data:
-        return await msg.edit("❌ Could not get MP4 URL from API.")
-
-    mp4_url = data["url"]
-
-    await msg.edit("📤 Uploading to Telegram…")
+    msg = await message.reply_text("🔍 Searching…")
 
     try:
-        await client.send_video(
-            chat_id=message.chat.id,
-            video=mp4_url,
-            supports_streaming=True,
-            caption=f"🎬 **{query}**\nhttps://youtu.be/{video_id}"
+        # 🔍 STEP 1 — Search YouTube
+        async with aiohttp.ClientSession() as session:
+            vid = await search_youtube_video_id(session, query)
+
+        if not vid:
+            await client.send_message(
+                ADMIN,
+                f"❌ VIDEO ERROR: No YouTube results for query:\n`{query}`"
+            )
+            return await msg.edit("❌ No YouTube results found.")
+
+        api = "https://ytstream-download-youtube-videos.p.rapidapi.com/dl"
+
+        headers = {
+            "x-rapidapi-key": YTSTREAM_API_KEY,
+            "x-rapidapi-host": "ytstream-download-youtube-videos.p.rapidapi.com"
+        }
+
+        params = {"id": vid}
+
+        # 🌐 STEP 2 — Fetch from API
+        async with aiohttp.ClientSession() as s:
+            async with s.get(api, headers=headers, params=params) as r:
+                status = r.status
+                text_body = await r.text()
+
+                # Try JSON
+                try:
+                    data = await r.json()
+                except:
+                    data = None
+
+        # Send admin API debug
+        await client.send_message(
+            ADMIN,
+            f"📡 <b>YTStream API Response</b>\n"
+            f"• Query: <code>{query}</code>\n"
+            f"• Video ID: <code>{vid}</code>\n"
+            f"• Status: <code>{status}</code>\n"
+            f"• Raw:\n<code>{text_body[:4000]}</code>",
+            parse_mode="html"
         )
-        await msg.delete()
+
+        if not data:
+            return await msg.edit("❌ API error — empty response.")
+
+        # 🎬 STEP 3 — Find MP4
+        mp4_url = None
+        for fmt in data.get("formats", []):
+            if "mp4" in fmt.get("mimeType", "").lower() and "url" in fmt:
+                mp4_url = fmt["url"]
+                break
+
+        if not mp4_url:
+            await client.send_message(
+                ADMIN,
+                f"❌ <b>NO MP4 FORMAT</b>\nVideo ID: `{vid}`\nAPI Response:\n<code>{text_body[:4000]}</code>",
+                parse_mode="html"
+            )
+            return await msg.edit("❌ No MP4 format found for this video.")
+
+        await msg.edit("📤 Uploading…")
+
+        # 📤 STEP 4 — Upload to Telegram
+        try:
+            await client.send_video(
+                message.chat.id,
+                mp4_url,
+                supports_streaming=True,
+                caption=f"🎬 {query}\nhttps://youtu.be/{vid}",
+            )
+            await msg.delete()
+
+        except Exception as e:
+            tb = traceback.format_exc()
+            await client.send_message(
+                ADMIN,
+                f"❌ <b>TELEGRAM UPLOAD ERROR</b>\n"
+                f"• URL: <code>{mp4_url}</code>\n"
+                f"• Exception: <code>{str(e)}</code>\n\n"
+                f"<b>Traceback:</b>\n<code>{tb}</code>",
+                parse_mode="html"
+            )
+            await msg.edit(f"❌ Telegram rejected the video:\n`{e}`")
 
     except Exception as e:
-        await msg.edit(f"❌ Upload failed:\n`{e}`")
+        tb = traceback.format_exc()
+        await client.send_message(
+            ADMIN,
+            f"❌ <b>UNCAUGHT /video ERROR</b>\n"
+            f"• Query: <code>{query}</code>\n"
+            f"• Exception: <code>{str(e)}</code>\n\n"
+            f"<b>Traceback:</b>\n<code>{tb}</code>",
+            parse_mode="html"
+        )
+        await msg.edit("❌ Unexpected error occurred.")
+
 
 # -------------------------
 # Startup / shutdown helpers
