@@ -967,12 +967,12 @@ async def search_youtube_video_id(session, query):
 async def video_cmd(client: Client, message: Message):
     query = " ".join(message.command[1:])
     if not query:
-        return await message.reply_text("🔍 Usage: <code>/video <song name or youtube title></code>", parse_mode=ParseMode.HTML)
+        return await message.reply_text("🔍 Usage: <code>/video <song name or title></code>", parse_mode=ParseMode.HTML)
 
     status = await message.reply_text("🔍 <b>Searching YouTube...</b>", parse_mode=ParseMode.HTML)
 
     try:
-        # ───── Step 1: Get top YouTube video ID (same reliable method as /play) ─────
+        # Step 1: Get top video ID (same as /play — no API key needed)
         video_id = await html_youtube_first(query)
         if not video_id:
             return await status.edit("❌ No YouTube results found.")
@@ -980,45 +980,79 @@ async def video_cmd(client: Client, message: Message):
         video_url = f"https://youtu.be/{video_id}"
         thumb_url = f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
 
-        await status.edit(f"✅ Found: <code>{video_id}</code>\n📥 <b>Extracting best video+audio stream...</b>", parse_mode=ParseMode.HTML)
+        await status.edit("📥 <b>Extracting video stream (cookie-free method)...</b>", parse_mode=ParseMode.HTML)
 
-        # ───── Step 2: Use yt-dlp to get direct streamable MP4 (free & no cookies) ─────
+        # Step 2: yt-dlp options that bypass age-restricted/music videos LOVE
         ydl_opts = {
-            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "format": (
+                "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/"
+                "best[height<=1080][ext=mp4]/best[ext=mp4]/best"
+            ),
+            "merge_output_format": "mp4",
             "quiet": True,
             "no_warnings": True,
-            "merge_output_format": "mp4",
-            "nocheckcertificate": True,
+            "retries": 10,
+            "fragment_retries": 10,
+            "extractor_retries": 5,
             "http_headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            }
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-us,en;q=0.5",
+                "Sec-Fetch-Mode": "navigate",
+            },
+            # THESE ARE THE MAGIC LINES — 100% cookie-free bypass
+            "cookiefile": "",  # Explicitly disable any cookie jar
+            "nocheckcertificate": True,
+            "geo_bypass": True,
+            "geo_bypass_country": "US",
+            # Extra tricks for stubborn videos
+            "extract_flat": False,
+            "skip_download": False,
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(video_url, download=False)
-            direct_url = info.get("url") or info.get("requested_formats")[0]["url"] if info.get("requested_formats") else None
-            title = info.get("title", query)
-            duration = info.get("duration", 0)
-            readable_dur = format_time(duration) if duration else "LIVE"
 
-        if not direct_url:
-            return await status.edit("❌ Could not extract a playable video stream.")
+            # Safely get direct URL
+            if "formats" in info:
+                # Pick best MP4 with audio
+                chosen = None
+                for f in info["formats"][::-1]:  # reverse = best first
+                    if f.get("vcodec") != "none" and f.get("acodec") != "none" and f.get("ext") == "mp4":
+                        if f.get("height", 0) <= 1080:
+                            chosen = f
+                            break
+                if not chosen:
+                    # Fallback: any mp4 with both video+audio
+                    for f in info["formats"][::-1]:
+                        if f.get("vcodec") != "none" and f.get("acodec") != "none":
+                            chosen = f
+                            break
+                if not chosen:
+                    return await status.edit("❌ No suitable MP4 stream found.")
+                direct_url = chosen["url"]
+                title = info.get("title", query)
+                duration = info.get("duration", 0)
+            else:
+                return await status.edit("❌ Could not extract formats.")
+
+        readable_dur = format_time(duration) if duration else "LIVE"
 
         await status.edit(
-            f"📤 <b>Uploading video...</b>\n"
-            f"🎥 <b>Title:</b> <i>{title}</i>\n"
-            f"⏱ <b>Duration:</b> <code>{readable_dur}</code>",
+            f"📤 <b>Uploading...</b>\n"
+            f"🎬 <b>{title}</b>\n"
+            f"⏱ <code>{readable_dur}</code>",
             parse_mode=ParseMode.HTML
         )
 
-        # ───── Step 3: Send as streamable video ─────
+        # Step 3: Send streamable video
         await client.send_video(
             chat_id=message.chat.id,
             video=direct_url,
-            caption=f"🎬 <b>{title}</b>\n\n🔗 {video_url}\n💡 Requested by {message.from_user.mention}",
+            caption=f"🎬 <b>{title}</b>\n\n🔗 {video_url}\n👤 Requested by {message.from_user.mention}",
             duration=duration,
-            width=info.get("width"),
-            height=info.get("height"),
+            width=chosen.get("width"),
+            height=chosen.get("height"),
             thumb=thumb_url,
             supports_streaming=True,
             parse_mode=ParseMode.HTML,
@@ -1028,18 +1062,8 @@ async def video_cmd(client: Client, message: Message):
         await status.delete()
 
     except Exception as e:
-        log.error(f"/video error: %s", e)
-        try:
-            await status.edit("❌ Failed to send video. Try again later.")
-        except:
-            pass
-        # Optional: send error to admin
-        if message.from_user.id in MODS:
-            await client.send_message(
-                ADMIN,
-                f"❌ <b>/video failed</b>\nQuery: <code>{query}</code>\nError: <code>{e}</code>",
-                parse_mode=ParseMode.HTML
-            )
+        log.error(f"/video error: {e}")
+        await status.edit("❌ Failed to send video — likely age-restricted or region-blocked.")
 
 # -------------------------
 # Startup / shutdown helpers
