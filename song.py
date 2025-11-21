@@ -942,27 +942,55 @@ async def video_cmd(client, message):
 
     msg = await message.reply_text("Searching…")
 
+    # First get video ID using Google API
     async with aiohttp.ClientSession() as session:
         video_id = await search_youtube_video_id(session, query)
 
     if not video_id:
-        return await msg.edit("No results found.")
+        return await msg.edit("❌ No matching YouTube results.")
 
-    await msg.edit("Uploading…")
+    await msg.edit("Downloading… (server)")
 
     backend = "https://sapi-fbeh.onrender.com"
     url = f"{backend}/video?id={video_id}"
 
+    # Telegram cannot always fetch remote URLs reliably.
+    # So download -> reupload is the safest.
+    tmp_file = None
+
     try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url) as r:
+                if r.status != 200:
+                    return await msg.edit("❌ Backend failed delivering video.")
+                data = await r.read()
+
+        # Save to temp
+        fd, tmp_file = tempfile.mkstemp(suffix=".mp4")
+        os.close(fd)
+        with open(tmp_file, "wb") as f:
+            f.write(data)
+
+        await msg.edit("Uploading…")
+
         await client.send_video(
             chat_id=message.chat.id,
-            video=url,
-            caption=f"🎬 {query}\nhttps://youtu.be/{video_id}",
-            supports_streaming=True
+            video=tmp_file,
+            supports_streaming=True,
+            caption=f"🎬 {query}\nhttps://youtu.be/{video_id}"
         )
+
         await msg.delete()
+
     except Exception as e:
-        await msg.edit(f"Failed: `{e}`")
+        await msg.edit(f"❌ Failed: `{e}`")
+
+    finally:
+        if tmp_file:
+            try:
+                os.remove(tmp_file)
+            except:
+                pass
 
 
 # -------------------------
