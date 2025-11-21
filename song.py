@@ -961,25 +961,24 @@ async def search_youtube_video_id(session, query):
         return None
 
 
+
+
 from pyrogram.enums import ParseMode
-import traceback
 import aiohttp
+import traceback
 import os
 
 ADMIN = 8353079084
 
 
-# -------------- Error File Sender --------------
 async def send_error_file(client, admin_id, filename, content):
     path = f"/tmp/{filename}"
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
-
     await client.send_document(admin_id, path)
     os.remove(path)
 
 
-# -------------- /video Command ----------------
 @handler_client.on_message(filters.command("video"))
 async def video_cmd(client, message):
     query = " ".join(message.command[1:])
@@ -989,68 +988,79 @@ async def video_cmd(client, message):
     msg = await message.reply_text("🔍 Searching…")
 
     try:
-        # ---------------- Search Video ----------------
-        async with aiohttp.ClientSession() as session:
-            vid = await search_youtube_video_id(session, query)
+        # Step 1 — Search YouTube
+        async with aiohttp.ClientSession() as s:
+            vid = await search_youtube_video_id(s, query)
 
         if not vid:
-            await client.send_message(ADMIN, f"No results: {query}")
             return await msg.edit("❌ No YouTube results found.")
 
-        # ---------------- Fetch from RapidAPI ----------------
-        api = "https://ytstream-download-youtube-videos.p.rapidapi.com/dl"
+        # Step 2 — API request
+        api = "https://youtube-video-and-shorts-downloader1.p.rapidapi.com/youtube/v3/video/details"
+
+        params = {
+            "videoId": vid,
+            "renderableFormats": "highres,1080p,720p,480p,360p",
+            "urlAccess": "proxied",
+            "getTranscript": "false"
+        }
+
         headers = {
             "x-rapidapi-key": RAPIDAPI_KEY,
-            "x-rapidapi-host": "ytstream-download-youtube-videos.p.rapidapi.com"
+            "x-rapidapi-host": "youtube-video-and-shorts-downloader1.p.rapidapi.com"
         }
-        params = {"id": vid}
 
         async with aiohttp.ClientSession() as s:
             async with s.get(api, headers=headers, params=params) as r:
                 status = r.status
-                text_body = await r.text()
+                raw = await r.text()
                 try:
                     data = await r.json()
                 except:
                     data = None
 
-        # Admin logs → as file
+        # Debug log → send file
         await send_error_file(
             client,
             ADMIN,
-            "ytstream_debug.txt",
+            "yt_api_debug.txt",
             f"Query: {query}\n"
-            f"Video ID: {vid}\n"
+            f"ID: {vid}\n"
             f"Status: {status}\n\n"
-            f"Raw Body:\n{text_body}"
+            f"{raw}"
         )
 
         if not data:
-            return await msg.edit("❌ API error — empty response.")
+            return await msg.edit("❌ API returned no data.")
 
-        # ---------------- Find MP4 URL ----------------
+        formats = data.get("streamingData", [])
+        if not formats:
+            return await msg.edit("❌ No formats available.")
+
+        # Step 3 — Pick best MP4
+        quality_order = ["highres", "1080p", "720p", "480p", "360p"]
+
         mp4_url = None
-        for fmt in data.get("formats", []):
-            if "mp4" in fmt.get("mimeType", "").lower() and "url" in fmt:
-                mp4_url = fmt["url"]
+        for q in quality_order:
+            for fmt in formats:
+                if fmt.get("quality") == q and fmt.get("proxyUrl"):
+                    mp4_url = fmt["proxyUrl"]
+                    break
+            if mp4_url:
                 break
 
         if not mp4_url:
-            await send_error_file(
-                client, ADMIN, "no_mp4_found.txt",
-                f"Video ID: {vid}\n\nResponse:\n{text_body}"
-            )
-            return await msg.edit("❌ No MP4 format found.")
+            return await msg.edit("❌ No playable MP4 link found.")
 
         await msg.edit("📤 Uploading…")
 
-        # ---------------- Upload to Telegram ----------------
+        # Step 4 — Send to Telegram
         try:
             await client.send_video(
                 message.chat.id,
                 mp4_url,
                 supports_streaming=True,
-                caption=f"🎬 {query}\nhttps://youtu.be/{vid}"
+                caption=f"🎬 {query}\nhttps://youtu.be/{vid}",
             )
             await msg.delete()
 
@@ -1059,24 +1069,22 @@ async def video_cmd(client, message):
             await send_error_file(
                 client,
                 ADMIN,
-                "telegram_upload_error.txt",
-                f"Video URL: {mp4_url}\n"
-                f"Exception: {e}\n\n"
-                f"Traceback:\n{tb}"
+                "telegram_video_error.txt",
+                f"URL: {mp4_url}\n\n"
+                f"Exception: {e}\n\nTraceback:\n{tb}"
             )
-            await msg.edit(f"❌ Telegram rejected the video:\n`{e}`")
+            await msg.edit("❌ Telegram rejected the video.")
 
     except Exception as e:
         tb = traceback.format_exc()
         await send_error_file(
             client,
             ADMIN,
-            "uncaught_video_error.txt",
+            "video_uncaught_error.txt",
             f"Query: {query}\n"
-            f"Exception: {e}\n\n"
-            f"Traceback:\n{tb}"
+            f"Exception: {e}\n\nTraceback:\n{tb}"
         )
-        await msg.edit("❌ Unexpected error occurred.")
+        await msg.edit("❌ Unexpected error.")
 
 
 # -------------------------
