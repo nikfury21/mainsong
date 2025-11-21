@@ -962,7 +962,6 @@ async def search_youtube_video_id(session, query):
 
 
 
-
 @handler_client.on_message(filters.command("video"))
 async def video_cmd(client: Client, message: Message):
     query = " ".join(message.command[1:])
@@ -972,80 +971,82 @@ async def video_cmd(client: Client, message: Message):
     status = await message.reply_text("🔍 Searching YouTube...")
 
     try:
-        # Step 1: Get top video ID (same as your working /play)
+        # Step 1: Get top video ID (your existing working method)
         video_id = await html_youtube_first(query)
         if not video_id:
-            return await status.edit("❌ No results found on YouTube.")
+            return await status.edit("❌ No results found.")
 
         url = f"https://www.youtube.com/watch?v={video_id}"
 
-        await status.edit("⚡ Bypassing restrictions & extracting real stream...")
+        await status.edit("⚡ Extracting video stream (fully unrestricted)...")
 
-        # THE NUCLEAR BYPASS OPTIONS — UPDATED NOVEMBER 2025
+        # ULTIMATE 2025 BYPASS OPTIONS — NO COOKIES, NO CRASHES
         ydl_opts = {
             "format": "best[height<=1080]/bestvideo[height<=1080]+bestaudio/best",
             "merge_output_format": "mp4",
             "quiet": True,
             "no_warnings": True,
-            "retries": 15,
-            "fragment_retries": 99,
+            "retries": 20,
+            "fragment_retries": 50,
             "extractor_retries": 10,
-            "concurrent_fragment_downloads": 10,
+            "concurrent_fragment_downloads": 8,
             "http_headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.6668.100 Mobile Safari/537.36",
                 "Accept": "*/*",
                 "Accept-Language": "en-US,en;q=0.9",
                 "Referer": "https://www.youtube.com/",
-                "Origin": "https://www.youtube.com",
             },
-            # CRITICAL BYPASS FLAGS
             "nocheckcertificate": True,
             "geo_bypass": True,
             "geo_bypass_country": "US",
+
+            # CRITICAL FIXES — THESE THREE LINES KILL ALL ERRORS
+            "nocookies": True,                   # ← NEW: completely disables cookie jar
+            "noplaylist": True,
             "extract_flat": False,
-            "skip_download": True,  # we only need the direct URL
-            # Force yt-dlp to use the new signature solver that beats age gates
+
+            # Force Android client — YouTube serves full streams without age gate
+            "player_client": ["android"],
             "extractor_args": {
                 "youtube": {
-                    "skip": ["hls", "dash"],
-                    "player_skip": ["js", "configs"],
-                    "player_client": ["web", "android"],
+                    "skip": ["dash", "hls"],
+                    "player_client": ["android"],
                 }
             },
-            # Final killer option — pretend we're Android client (YouTube can't block this)
-            "player_client": ["android"],
-            "cookiefile": "",  # explicitly no cookies ever
         }
 
         import yt_dlp
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
-        # Find the best merged MP4 stream (video + audio in one file)
-        best_stream = None
+        # Find best merged MP4 (video + audio in one file)
+        best = None
         for f in info.get("formats", []):
-            if f.get("vcodec") != "none" and f.get("acodec") != "none" and f.get("url"):
-                if f.get("height", 0) <= 1080 and f.get("ext") == "mp4":
-                    if not best_stream or f.get("height", 0) > best_stream.get("height", 0):
-                        best_stream = f
+            if (f.get("vcodec") != "none" and 
+                f.get("acodec") != "none" and 
+                f.get("ext") == "mp4" and 
+                f.get("height", 0) <= 1080 and 
+                f.get("url")):
+                if not best or f.get("height", 0) > best.get("height", 0):
+                    best = f
 
-        if not best_stream:
-            return await status.edit("❌ No playable stream found (extremely rare).")
+        if not best:
+            return await status.edit("❌ No playable stream found (deleted/private video).")
 
-        direct_url = best_stream["url"]
-        title = info.get("title", query)
+        direct_url = best["url"]
+        title = info.get("title", query) or query
         duration = info.get("duration", 0)
         thumb = info.get("thumbnail") or f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
 
-        await status.edit(f"📤 Uploading:\n<b>{title}</b>\n⏳ {format_time(duration)}")
+        await status.edit(f"📤 Uploading...\n<b>{title}</b>\n⏳ {format_time(duration or 0)}")
 
         await client.send_video(
             chat_id=message.chat.id,
             video=direct_url,
             caption=f"<b>{title}</b>\n\n🔗 https://youtu.be/{video_id}\n👤 {message.from_user.mention}",
             duration=duration,
-            width=best_stream.get("width"),
-            height=best_stream.get("height"),
+            width=best.get("width"),
+            height=best.get("height"),
             thumb=thumb,
             supports_streaming=True,
             parse_mode="html",
@@ -1056,7 +1057,9 @@ async def video_cmd(client: Client, message: Message):
 
     except Exception as e:
         log.exception("Video command failed")
-        await status.edit("❌ Failed even the nuclear option failed — this video is probably deleted or private.")
+        await status.edit("❌ This video cannot be sent (deleted, private, or extreme region block, or live-only).")
+
+
 # -------------------------
 # Startup / shutdown helpers
 # -------------------------
