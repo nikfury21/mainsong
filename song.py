@@ -961,13 +961,13 @@ async def search_youtube_video_id(session, query):
         return None
 
 
+from pyrogram.enums import ParseMode
 import traceback
 
-YTSTREAM_API_KEY = os.getenv("RAPIDAPI_KEY")   # using your existing key
 
 @handler_client.on_message(filters.command("video"))
 async def video_cmd(client, message):
-    ADMIN = 8353079084  # <-- already in your code
+    ADMIN = 8353079084
 
     query = " ".join(message.command[1:])
     if not query:
@@ -976,7 +976,6 @@ async def video_cmd(client, message):
     msg = await message.reply_text("🔍 Searching…")
 
     try:
-        # 🔍 STEP 1 — Search YouTube
         async with aiohttp.ClientSession() as session:
             vid = await search_youtube_video_id(session, query)
 
@@ -990,25 +989,21 @@ async def video_cmd(client, message):
         api = "https://ytstream-download-youtube-videos.p.rapidapi.com/dl"
 
         headers = {
-            "x-rapidapi-key": YTSTREAM_API_KEY,
+            "x-rapidapi-key": RAPIDAPI_KEY,
             "x-rapidapi-host": "ytstream-download-youtube-videos.p.rapidapi.com"
         }
 
         params = {"id": vid}
 
-        # 🌐 STEP 2 — Fetch from API
         async with aiohttp.ClientSession() as s:
             async with s.get(api, headers=headers, params=params) as r:
                 status = r.status
                 text_body = await r.text()
-
-                # Try JSON
                 try:
                     data = await r.json()
                 except:
                     data = None
 
-        # Send admin API debug
         await client.send_message(
             ADMIN,
             f"📡 <b>YTStream API Response</b>\n"
@@ -1016,13 +1011,12 @@ async def video_cmd(client, message):
             f"• Video ID: <code>{vid}</code>\n"
             f"• Status: <code>{status}</code>\n"
             f"• Raw:\n<code>{text_body[:4000]}</code>",
-            parse_mode="HTML"
+            parse_mode=ParseMode.HTML
         )
 
         if not data:
             return await msg.edit("❌ API error — empty response.")
 
-        # 🎬 STEP 3 — Find MP4
         mp4_url = None
         for fmt in data.get("formats", []):
             if "mp4" in fmt.get("mimeType", "").lower() and "url" in fmt:
@@ -1033,13 +1027,12 @@ async def video_cmd(client, message):
             await client.send_message(
                 ADMIN,
                 f"❌ <b>NO MP4 FORMAT</b>\nVideo ID: `{vid}`\nAPI Response:\n<code>{text_body[:4000]}</code>",
-                parse_mode="HTML"
+                parse_mode=ParseMode.HTML
             )
             return await msg.edit("❌ No MP4 format found for this video.")
 
         await msg.edit("📤 Uploading…")
 
-        # 📤 STEP 4 — Upload to Telegram
         try:
             await client.send_video(
                 message.chat.id,
@@ -1057,7 +1050,7 @@ async def video_cmd(client, message):
                 f"• URL: <code>{mp4_url}</code>\n"
                 f"• Exception: <code>{str(e)}</code>\n\n"
                 f"<b>Traceback:</b>\n<code>{tb}</code>",
-                parse_mode="HTML"
+                parse_mode=ParseMode.HTML
             )
             await msg.edit(f"❌ Telegram rejected the video:\n`{e}`")
 
@@ -1069,7 +1062,7 @@ async def video_cmd(client, message):
             f"• Query: <code>{query}</code>\n"
             f"• Exception: <code>{str(e)}</code>\n\n"
             f"<b>Traceback:</b>\n<code>{tb}</code>",
-            parse_mode="HTML"
+            parse_mode=ParseMode.HTML
         )
         await msg.edit("❌ Unexpected error occurred.")
 
