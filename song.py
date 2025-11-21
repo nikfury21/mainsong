@@ -934,63 +934,85 @@ async def callback_handler(client, cq: CallbackQuery):
         await cq.answer()
 
 
-@handler_client.on_message(filters.command("video"))
+import aiohttp
+import os
+from pyrogram import Client, filters
+
+YOUTUBE_DL_API_KEY = os.getenv("YTDL_API_KEY")  # <--- PUT YOUR API KEY HERE
+
+
+async def search_youtube_video_id(session, query):
+    """Search video using Google YouTube API and return video_id"""
+    url = "https://www.googleapis.com/youtube/v3/search"
+    params = {
+        "part": "snippet",
+        "q": query,
+        "key": os.getenv("YOUTUBE_API_KEY"),  # you already have this
+        "maxResults": 1,
+        "type": "video"
+    }
+
+    async with session.get(url, params=params) as r:
+        data = await r.json()
+
+    try:
+        return data["items"][0]["id"]["videoId"]
+    except:
+        return None
+
+
+
+@Client.on_message(filters.command("video"))
 async def video_cmd(client, message):
     query = " ".join(message.command[1:])
     if not query:
-        return await message.reply_text("Use /video <query>")
+        return await message.reply_text("Use: `/video <song or video name>`")
 
-    msg = await message.reply_text("Searching…")
+    msg = await message.reply_text("🔍 Searching YouTube…")
 
-    # First get video ID using Google API
     async with aiohttp.ClientSession() as session:
         video_id = await search_youtube_video_id(session, query)
 
     if not video_id:
-        return await msg.edit("❌ No matching YouTube results.")
+        return await msg.edit("❌ No YouTube results found.")
+    
+    yt_url = f"https://youtube.com/watch?v={video_id}"
+    await msg.edit("⏳ Fetching MP4 download link…")
 
-    await msg.edit("Downloading… (server)")
+    # --- YouTube Download API ---
+    api = "https://youtube-download-api.org/api/v1/download"
+    headers = {
+        "Authorization": f"Bearer {YOUTUBE_DL_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    body = {
+        "url": yt_url,
+        "format": "720"     # choose 1080 / 720 / 480
+    }
 
-    backend = "https://sapi-fbeh.onrender.com"
-    url = f"{backend}/video?id={video_id}"
+    async with aiohttp.ClientSession() as s:
+        async with s.post(api, headers=headers, json=body) as r:
+            data = await r.json()
 
-    # Telegram cannot always fetch remote URLs reliably.
-    # So download -> reupload is the safest.
-    tmp_file = None
+    if "url" not in data:
+        return await msg.edit("❌ Could not get MP4 URL from API.")
+
+    mp4_url = data["url"]   # direct mp4 link
+    filename = data.get("filename", "video.mp4")
+
+    await msg.edit("📤 Uploading to Telegram…")
 
     try:
-        async with aiohttp.ClientSession() as s:
-            async with s.get(url) as r:
-                if r.status != 200:
-                    return await msg.edit("❌ Backend failed delivering video.")
-                data = await r.read()
-
-        # Save to temp
-        fd, tmp_file = tempfile.mkstemp(suffix=".mp4")
-        os.close(fd)
-        with open(tmp_file, "wb") as f:
-            f.write(data)
-
-        await msg.edit("Uploading…")
-
         await client.send_video(
             chat_id=message.chat.id,
-            video=tmp_file,
+            video=mp4_url,
             supports_streaming=True,
-            caption=f"🎬 {query}\nhttps://youtu.be/{video_id}"
+            caption=f"🎬 **{query}**\nhttps://youtu.be/{video_id}"
         )
-
         await msg.delete()
 
     except Exception as e:
-        await msg.edit(f"❌ Failed: `{e}`")
-
-    finally:
-        if tmp_file:
-            try:
-                os.remove(tmp_file)
-            except:
-                pass
+        await msg.edit(f"❌ Upload failed:\n`{e}`")
 
 
 # -------------------------
