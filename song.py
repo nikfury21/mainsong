@@ -188,56 +188,15 @@ async def rapid_youtube_search(session, query: str):
 
     return None
 
-async def scrape_lyrics(url: str):
-    async with aiohttp.ClientSession() as s:
-        async with s.get(url) as r:
-            if r.status != 200:
-                return None
-            html = await r.text()
 
-    soup = BeautifulSoup(html, "html.parser")
-    blocks = soup.find_all("div", {"data-lyrics-container": "true"})
-    if not blocks:
-        return None
 
-    lines = []
-    bad = [
-        "contributors", "translation", "português", "español",
-        "italiano", "русский", "deutsch", "read more",
-        "galego", "nederlands", "česky", "lyrics"
-    ]
-
-    for block in blocks:
-        text = block.get_text("\n").strip()
-        for line in text.split("\n"):
-            line = line.strip()
-
-            if not line:
-                lines.append("")
-                continue
-
-            # remove sections like [Chorus]
-            if line.startswith("[") and line.endswith("]"):
-                lines.append("")
-                continue
-
-            if any(x in line.lower() for x in bad):
-                continue
-
-            lines.append(line)
-
-    final = "\n".join(lines).strip()
-
-    while "\n\n\n" in final:
-        final = final.replace("\n\n\n", "\n\n")
-    return final
-
+from urllib.parse import quote
 
 async def genius_search(q: str):
     if not GENIUS_TOKEN:
         return None
 
-    url = f"https://api.genius.com/search?q={q}"
+    url = f"https://api.genius.com/search?q={quote(q)}"
     headers = {"Authorization": f"Bearer {GENIUS_TOKEN}"}
 
     async with aiohttp.ClientSession() as s:
@@ -250,7 +209,50 @@ async def genius_search(q: str):
     if not hits:
         return None
 
-    return hits[0]["result"]["url"]
+    # Try first 2 hits if possible
+    for hit in hits[:2]:
+        url = hit["result"].get("url")
+        if url:
+            return url
+
+    return None
+
+
+async def scrape_lyrics(url: str):
+    async with aiohttp.ClientSession() as s:
+        async with s.get(url) as r:
+            if r.status != 200:
+                return None
+            html = await r.text()
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    # First Try → data-lyrics-container
+    blocks = soup.find_all("div", {"data-lyrics-container": "true"})
+    
+    if not blocks:
+        # Second Try → old Genius style
+        lyrics_container = soup.find("div", class_="lyrics")
+        if lyrics_container:
+            text = lyrics_container.get_text("\n").strip()
+            return text
+
+        return None
+
+    lines = []
+    bad_words = ["copyright", "embed", "translation"]
+
+    for block in blocks:
+        for line in block.get_text("\n").strip().split("\n"):
+            if line.startswith("[") and line.endswith("]"):
+                continue
+            if any(b in line.lower() for b in bad_words):
+                continue
+            if line.strip():
+                lines.append(line)
+
+    return "\n".join(lines).strip()
+
 
 async def html_youtube_first(query: str):
     import aiohttp, re
@@ -609,6 +611,42 @@ async def song_command(client: Client, message: Message):
         except: pass
 
 
+
+
+@handler_client.on_message(filters.command("play") & filters.reply)
+async def play_replied_audio(client, message):
+    # If replied message has an audio file
+    replied = message.reply_to_message
+    if not replied.audio:
+        return
+
+    audio = replied.audio
+    file_id = audio.file_id
+    chat_id = message.chat.id
+
+    # Download Telegram file into stream URL
+    tg_file = await client.get_file(file_id)
+    file_path = tg_file.file_path
+    stream_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+
+    title = audio.title or audio.file_name or "Unknown Title"
+    
+    # Play directly in VC
+    await call_py.play(chat_id, MediaStream(stream_url))
+
+    current_song[chat_id] = {
+        "title": title,
+        "url": stream_url,
+        "vid": None,
+        "user": message.from_user,
+        "duration": audio.duration or 180,
+        "start_time": time.time()
+    }
+
+    await message.reply_text(
+        f"🎧 Streaming replied audio:\n<b>{title}</b>",
+        parse_mode=ParseMode.HTML
+    )
 
 
 @handler_client.on_message(filters.command("play"))
