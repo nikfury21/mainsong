@@ -584,15 +584,14 @@ async def song_command(client: Client, message: Message):
 
 
             
-            with open(temp_path, "rb") as audio:
-                await client.send_audio(
-                    chat_id=message.chat.id,
-                    audio=audio,
-                    thumb=thumb_path if thumb_path else None,
-                    caption=caption,
-                    parse_mode=ParseMode.HTML,
-                    file_name=f"{title}.mp3"
-                )
+            await client.send_audio(
+                chat_id=message.chat.id,
+                audio=temp_path,
+                thumb=thumb_path if thumb_path else None,
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+                file_name=f"{title}.mp3"
+            )
 
 
 
