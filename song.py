@@ -254,6 +254,21 @@ async def scrape_lyrics(url: str):
     return "\n".join(lines).strip()
 
 
+
+async def genius_bio(url: str):
+    async with aiohttp.ClientSession() as s:
+        async with s.get(url) as r:
+            if r.status != 200:
+                return None
+            html = await r.text()
+
+    soup = BeautifulSoup(html, "html.parser")
+    desc = soup.find("div", {"class": "SongDescription__Content"})
+    if not desc:
+        return None
+    return desc.get_text(" ").strip()
+
+
 async def html_youtube_first(query: str):
     import aiohttp, re
     url = f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}"
@@ -422,9 +437,10 @@ async def lyrics_cmd(client, message):
     await message.reply_chat_action(ChatAction.TYPING)
 
     url = await genius_search(query)
+
     if not url:
         return await message.reply_text(
-            "No lyrics found",
+            "❌ No lyrics found.",
             parse_mode=ParseMode.HTML
         )
 
@@ -435,23 +451,9 @@ async def lyrics_cmd(client, message):
             parse_mode=ParseMode.HTML
         )
 
-    # Correct caption with bold+italic+underline + song bio
     artist, title = parse_artist_and_title(query)
-    bio = generate_song_bio(artist, title)
+    bio = await genius_bio(url) or "No bio available."
     header_caption = build_caption_html(artist, title, bio)
-
-    # First part with caption
-    await message.reply_text(
-        header_caption + "\n\n" + f"<code>{lyrics[:3500]}</code>",
-        parse_mode=ParseMode.HTML
-    )
-
-    # Remaining chunks if needed
-    for i in range(3500, len(lyrics), 3500):
-        await message.reply_text(
-            f"<code>{lyrics[i:i+3500]}</code>",
-            parse_mode=ParseMode.HTML
-        )
 
 
 # -------------------------
@@ -574,9 +576,13 @@ async def song_command(client: Client, message: Message):
 
             # ----- Upload audio with or without thumbnail -----
             # build caption
-            artist, title = parse_artist_and_title(user_query)
-            bio = generate_song_bio(artist, title)
-            caption = build_caption_html(artist, title, bio, include_emoji=True)
+            artist = "Unknown Artist"
+            title = user_query
+
+            bio = await genius_bio(await genius_search(f"{title} {artist}")) or "No bio available."
+            caption = build_caption_html(artist, title, bio)
+
+
             
             with open(temp_path, "rb") as audio:
                 await client.send_audio(
@@ -631,9 +637,10 @@ async def play_replied_audio(client, message):
             chat_id,
             MediaStream(
                 file_id,
-                video_flags=MediaStream.Flags.IGNORE
+                stream_type="audio"
             )
         )
+
     except Exception as e:
         return await message.reply_text(
             f"❌ Playback failed:\n<code>{e}</code>",
@@ -649,9 +656,12 @@ async def play_replied_audio(client, message):
         "start_time": time.time()
     }
 
-    artist, title = parse_artist_and_title(title)
-    bio = generate_song_bio(artist, title)
+    artist = audio.performer or "Unknown Artist"
+    title = audio.title or "Unknown Title"
+
+    bio = await genius_bio(await genius_search(f"{title} {artist}")) or "No bio available."
     caption = build_caption_html(artist, title, bio)
+
 
     await message.reply_text(
         f"{caption}\n\n<b>🎧 Streaming replied audio</b>",
