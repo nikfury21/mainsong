@@ -613,38 +613,48 @@ async def song_command(client: Client, message: Message):
 
 
 
-@handler_client.on_message(filters.command("play") & filters.reply)
+@handler_client.on_message(filters.reply & filters.command("play"))
 async def play_replied_audio(client, message):
-    # If replied message has an audio file
     replied = message.reply_to_message
+    chat_id = message.chat.id
+
     if not replied.audio:
-        return
+        return await message.reply_text("❌ Reply to an audio file only!")
 
     audio = replied.audio
     file_id = audio.file_id
-    chat_id = message.chat.id
-
-    # Download Telegram file into stream URL
-    tg_file = await client.get_file(file_id)
-    file_path = tg_file.file_path
-    stream_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
-
     title = audio.title or audio.file_name or "Unknown Title"
-    
-    # Play directly in VC
-    await call_py.play(chat_id, MediaStream(stream_url))
+    duration = audio.duration or 180
+
+    try:
+        await call_py.play(
+            chat_id,
+            MediaStream(
+                file_id,
+                video_flags=MediaStream.Flags.IGNORE
+            )
+        )
+    except Exception as e:
+        return await message.reply_text(
+            f"❌ Playback failed:\n<code>{e}</code>",
+            parse_mode=ParseMode.HTML
+        )
 
     current_song[chat_id] = {
         "title": title,
-        "url": stream_url,
+        "url": file_id,
         "vid": None,
         "user": message.from_user,
-        "duration": audio.duration or 180,
+        "duration": duration,
         "start_time": time.time()
     }
 
+    artist, title = parse_artist_and_title(title)
+    bio = generate_song_bio(artist, title)
+    caption = build_caption_html(artist, title, bio)
+
     await message.reply_text(
-        f"🎧 Streaming replied audio:\n<b>{title}</b>",
+        f"{caption}\n\n<b>🎧 Streaming replied audio</b>",
         parse_mode=ParseMode.HTML
     )
 
@@ -745,7 +755,14 @@ async def play_command(client: Client, message: Message):
     # ▶ PLAY NOW IN VC
     # ─────────────────────────────────────────
     try:
-        await call_py.play(chat_id, MediaStream(mp3, video_flags=MediaStream.Flags.IGNORE))
+        await call_py.play(
+            chat_id,
+            MediaStream(
+                mp3,
+                video_flags=MediaStream.Flags.IGNORE
+            )
+        )
+
 
         current_song[chat_id] = {
             "title": video_title,
