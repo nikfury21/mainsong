@@ -543,7 +543,9 @@ async def song_command(client: Client, message: Message):
         await safe_edit(progress_msg, _single_step_text(4, 6, "Retrieving data… 0%"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
 
         try:
-            mp3_bytes = await download_with_progress(session, mp3_url, progress_msg)
+            async with session.get(mp3_url) as resp:
+                mp3_bytes = await resp.read()
+
         except Exception as e:
             await client.send_message(ADMIN, f"Download error: {e}")
             await safe_edit(progress_msg, _single_step_text(4, 6, "❌ Download failed."), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
@@ -632,13 +634,16 @@ async def play_replied_audio(client, message):
     duration = audio.duration or 180
 
     try:
+        file_path = await replied.download()
+
         await call_py.play(
             chat_id,
             MediaStream(
-                file_id,
-                stream_type="audio"
+                file_path,
+                stream_type="local"
             )
         )
+
 
     except Exception as e:
         return await message.reply_text(
@@ -1284,3 +1289,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
