@@ -23,3 +23,5 @@ python-dotenv
 asyncpg
 pymongo
 gender-guesser
+beautifulsoup4
+aiohttp
