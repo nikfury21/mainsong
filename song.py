@@ -199,53 +199,72 @@ async def genius_search(query):
         return None
 
     url = f"https://api.genius.com/search?q={quote(query)}"
-    headers = {"Authorization": f"Bearer {GENIUS_TOKEN}"}
+    headers = {
+        "Authorization": f"Bearer {GENIUS_TOKEN}",
+        "User-Agent": "Mozilla/5.0"
+    }
+
+    async with aiohttp.ClientSession() as s:
+        async with s.get(url, headers=headers) as r:
+            status = r.status
+            data = await r.json()
 
     try:
-        async with aiohttp.ClientSession() as s:
-            async with s.get(url, headers=headers) as r:
-                status = r.status
-                data = await r.json()
+        await handler_client.send_message(
+            ADMIN,
+            f"🔍 genius_search\nQuery: {query}\nStatus: {status}"
+        )
+    except:
+        pass
 
-        # DEBUG DM
-        try:
-            await handler_client.send_message(
-                ADMIN,
-                f"🔍 genius_search\nQuery: {query}\nStatus: {status}\nHits: {len(data.get('response', {}).get('hits', []))}"
-            )
-        except:
-            pass
-
-        hits = data.get("response", {}).get("hits", [])
-        if not hits:
-            return None
-
-        for h in hits[:5]:
-            link = h["result"].get("url")
-            if link:
-                return link
-
+    hits = data.get("response", {}).get("hits", [])
+    if not hits:
         return None
 
-    except Exception as e:
-        try:
-            await handler_client.send_message(ADMIN, f"❌ genius_search error:\n{e}")
-        except:
-            pass
-        return None
+    q = query.lower()
+
+    # 1. Exact match on both artist + title
+    for h in hits:
+        title = (h["result"]["title"] or "").lower()
+        artist = (h["result"]["primary_artist"]["name"] or "").lower()
+        if any(k in q for k in title.split()) and any(k in q for k in artist.split()):
+            return h["result"]["url"]
+
+    # 2. Partial match
+    for h in hits:
+        title = (h["result"]["title"] or "").lower()
+        if title in q or q in title:
+            return h["result"]["url"]
+
+    # 3. Fallback to safest hit
+    for h in hits:
+        return h["result"].get("url")
+
+    return None
 
 
 
 async def scrape_lyrics(url):
     ADMIN = 8353079084
 
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/119.0 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": "https://www.google.com/"
+    }
+
     try:
         async with aiohttp.ClientSession() as s:
-            async with s.get(url) as r:
+            async with s.get(url, headers=headers) as r:
                 status = r.status
                 html = await r.text()
 
-        # send page info
+        # Debug basic info
         try:
             await handler_client.send_message(
                 ADMIN,
@@ -256,8 +275,9 @@ async def scrape_lyrics(url):
 
         soup = BeautifulSoup(html, "html.parser")
 
-        # NEW GENIUS
+        # NEW Genius layout
         blocks = soup.select("div[data-lyrics-container='true']")
+
         try:
             await handler_client.send_message(
                 ADMIN,
@@ -266,7 +286,6 @@ async def scrape_lyrics(url):
         except:
             pass
 
-        # — Extract —
         if blocks:
             lines = []
             for b in blocks:
@@ -284,12 +303,12 @@ async def scrape_lyrics(url):
             if final:
                 return final
 
-        # OLD GENIUS
+        # OLD layout
         old = soup.find("div", class_="lyrics")
         if old:
             return old.get_text("\n").strip()
 
-        # No extraction
+        # FAIL debug
         try:
             await handler_client.send_message(
                 ADMIN,
@@ -297,6 +316,7 @@ async def scrape_lyrics(url):
             )
         except:
             pass
+
         return None
 
     except Exception as e:
@@ -307,7 +327,9 @@ async def scrape_lyrics(url):
             )
         except:
             pass
+
         return None
+
 
 
 
