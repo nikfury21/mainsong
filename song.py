@@ -218,7 +218,7 @@ async def genius_search(q: str):
     return None
 
 
-async def scrape_lyrics(url: str):
+async def scrape_lyrics(url):
     async with aiohttp.ClientSession() as s:
         async with s.get(url) as r:
             if r.status != 200:
@@ -227,31 +227,39 @@ async def scrape_lyrics(url: str):
 
     soup = BeautifulSoup(html, "html.parser")
 
-    # First Try → data-lyrics-container
+    # NEW Genius layout
     blocks = soup.find_all("div", {"data-lyrics-container": "true"})
     
     if not blocks:
-        # Second Try → old Genius style
-        lyrics_container = soup.find("div", class_="lyrics")
-        if lyrics_container:
-            text = lyrics_container.get_text("\n").strip()
-            return text
-
+        # OLD Genius layout
+        old = soup.find("div", class_="lyrics")
+        if old:
+            return old.get_text("\n").strip()
         return None
 
     lines = []
-    bad_words = ["copyright", "embed", "translation"]
 
     for block in blocks:
-        for line in block.get_text("\n").strip().split("\n"):
+        raw = block.get_text("\n").strip()
+        for line in raw.split("\n"):
+            line = line.strip()
+
+            if not line:
+                lines.append("")
+                continue
+
             if line.startswith("[") and line.endswith("]"):
                 continue
-            if any(b in line.lower() for b in bad_words):
-                continue
-            if line.strip():
-                lines.append(line)
 
-    return "\n".join(lines).strip()
+            bad = ["contributors", "translation", "read more", "lyrics"]
+            if any(b in line.lower() for b in bad):
+                continue
+
+            lines.append(line)
+
+    final = "\n".join(lines).strip()
+    return final
+
 
 
 
@@ -452,8 +460,14 @@ async def lyrics_cmd(client, message):
         )
 
     artist, title = parse_artist_and_title(query)
-    bio = await genius_bio(url) or "No bio available."
-    header_caption = build_caption_html(artist, title, bio)
+    header_caption = f"🎵 <b>{artist} — \"{title}\"</b>"
+    if len(lyrics) <= 4096:
+        return await message.reply_text(f"{header_caption}\n\n{lyrics}", parse_mode=ParseMode.HTML)
+
+    for i in range(0, len(lyrics), 4096):
+        await message.reply_text(lyrics[i:i+4096], parse_mode=ParseMode.HTML)
+
+
 
 
 # -------------------------
@@ -578,11 +592,20 @@ async def song_command(client: Client, message: Message):
 
             # ----- Upload audio with or without thumbnail -----
             # build caption
-            artist = "Unknown Artist"
+            artist, title = parse_artist_and_title(user_query)
             title = user_query
 
-            bio = await genius_bio(await genius_search(f"{title} {artist}")) or "No bio available."
-            caption = build_caption_html(artist, title, bio)
+            search_url = await genius_search(f"{title} {artist}")
+            bio = await genius_bio(search_url) if search_url else None
+
+            if bio:
+                caption = (
+                    f"🎵 <b><u>{artist} - \"{title}\"</u></b>\n\n"
+                    f"<b><u>Song Bio:</u></b>\n<i>{bio}</i>"
+                )
+            else:
+                caption = f"🎵 <b><u>{artist} - \"{title}\"</u></b>"
+
 
 
             
@@ -640,9 +663,10 @@ async def play_replied_audio(client, message):
             chat_id,
             MediaStream(
                 file_path,
-                stream_type="local"
+                video_flags=MediaStream.Flags.IGNORE
             )
         )
+
 
 
     except Exception as e:
@@ -663,14 +687,13 @@ async def play_replied_audio(client, message):
     artist = audio.performer or "Unknown Artist"
     title = audio.title or "Unknown Title"
 
-    bio = await genius_bio(await genius_search(f"{title} {artist}")) or "No bio available."
-    caption = build_caption_html(artist, title, bio)
-
+    caption = f"🎵 <b>{artist} — \"{title}\"</b>"
 
     await message.reply_text(
         f"{caption}\n\n<b>🎧 Streaming replied audio</b>",
         parse_mode=ParseMode.HTML
     )
+
 
 
 @handler_client.on_message(filters.command("play"))
