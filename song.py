@@ -192,11 +192,11 @@ async def rapid_youtube_search(session, query: str):
 
 from urllib.parse import quote
 
-async def genius_search(q: str):
+async def genius_search(query):
     if not GENIUS_TOKEN:
         return None
 
-    url = f"https://api.genius.com/search?q={quote(q)}"
+    url = f"https://api.genius.com/search?q={quote(query)}"
     headers = {"Authorization": f"Bearer {GENIUS_TOKEN}"}
 
     async with aiohttp.ClientSession() as s:
@@ -209,11 +209,11 @@ async def genius_search(q: str):
     if not hits:
         return None
 
-    # Try first 2 hits if possible
-    for hit in hits[:2]:
-        url = hit["result"].get("url")
-        if url:
-            return url
+    # Try first 5 hits
+    for h in hits[:5]:
+        link = h["result"].get("url")
+        if link:
+            return link
 
     return None
 
@@ -263,7 +263,7 @@ async def scrape_lyrics(url):
 
 
 
-async def genius_bio(url: str):
+async def genius_bio(url):
     async with aiohttp.ClientSession() as s:
         async with s.get(url) as r:
             if r.status != 200:
@@ -271,10 +271,14 @@ async def genius_bio(url: str):
             html = await r.text()
 
     soup = BeautifulSoup(html, "html.parser")
-    desc = soup.find("div", {"class": "SongDescription__Content"})
-    if not desc:
-        return None
-    return desc.get_text(" ").strip()
+
+    desc = soup.find("div", class_=lambda c: c and "SongDescription__Content" in c)
+    if desc:
+        txt = desc.get_text(" ").strip()
+        return txt if txt else None
+
+    return None
+
 
 
 async def html_youtube_first(query: str):
@@ -461,11 +465,13 @@ async def lyrics_cmd(client, message):
 
     artist, title = parse_artist_and_title(query)
     header_caption = f"🎵 <b>{artist} — \"{title}\"</b>"
+
     if len(lyrics) <= 4096:
         return await message.reply_text(f"{header_caption}\n\n{lyrics}", parse_mode=ParseMode.HTML)
 
     for i in range(0, len(lyrics), 4096):
         await message.reply_text(lyrics[i:i+4096], parse_mode=ParseMode.HTML)
+
 
 
 
