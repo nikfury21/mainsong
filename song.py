@@ -61,6 +61,7 @@ bot = Client("bot_account", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKE
 userbot = Client("userbot_account", session_string=USERBOT_SESSION, api_id=API_ID, api_hash=API_HASH)
 # PyTgCalls voice client attached to userbot
 call_py = PyTgCalls(userbot)
+handler_client = bot if bot else userbot
 
 
 
@@ -191,7 +192,7 @@ async def rapid_youtube_search(session, query: str):
 
 
 from urllib.parse import quote
-async def genius_search(query):
+async def genius_search(client, query):
     ADMIN = 8353079084
 
     search_url = "https://genius.com/search?q=" + quote(query)
@@ -205,9 +206,9 @@ async def genius_search(query):
             async with s.get(search_url, headers=headers) as r:
                 html = await r.text()
 
-        # Debug HTML length
+        # Debug
         try:
-            await handler_client.send_message(
+            await client.send_message(
                 ADMIN,
                 f"🔍 genius_search (HTML SCRAPER)\nQuery: {query}\nHTML_len: {len(html)}"
             )
@@ -215,8 +216,6 @@ async def genius_search(query):
             pass
 
         soup = BeautifulSoup(html, "html.parser")
-
-        # Genius search page uses <a class="mini_card">
         hits = soup.select("a.mini_card")
 
         if not hits:
@@ -231,7 +230,7 @@ async def genius_search(query):
 
     except Exception as e:
         try:
-            await handler_client.send_message(ADMIN, f"❌ genius_search ERROR:\n{e}")
+            await client.send_message(ADMIN, f"❌ genius_search ERROR:\n{e}")
         except:
             pass
         return None
@@ -341,7 +340,8 @@ async def lyrics_cmd(client, message):
     except:
         pass
 
-    url = await genius_search(query)
+    url = await genius_search(client, query)
+
 
     # DEBUG result
     try:
@@ -598,7 +598,6 @@ async def get_mp3_url_rapidapi(session: aiohttp.ClientSession, video_id: str):
             log.debug("RapidAPI fetch exception attempt %d: %s", attempt+1, e)
             await asyncio.sleep(2)
     return None
-handler_client = bot if bot else userbot
 
 
 @handler_client.on_message(filters.command("lyrics"))
@@ -617,7 +616,8 @@ async def lyrics_cmd(client, message):
     except:
         pass
 
-    url = await genius_search(query)
+    url = await genius_search(client, query)
+
 
     # DEBUG result
     try:
