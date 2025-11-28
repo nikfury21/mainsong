@@ -193,73 +193,121 @@ async def rapid_youtube_search(session, query: str):
 from urllib.parse import quote
 
 async def genius_search(query):
+    ADMIN = 8353079084
+
     if not GENIUS_TOKEN:
         return None
 
     url = f"https://api.genius.com/search?q={quote(query)}"
     headers = {"Authorization": f"Bearer {GENIUS_TOKEN}"}
 
-    async with aiohttp.ClientSession() as s:
-        async with s.get(url, headers=headers) as r:
-            if r.status != 200:
-                return None
-            data = await r.json()
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, headers=headers) as r:
+                status = r.status
+                data = await r.json()
 
-    hits = data.get("response", {}).get("hits", [])
-    if not hits:
+        # DEBUG DM
+        try:
+            await handler_client.send_message(
+                ADMIN,
+                f"🔍 genius_search\nQuery: {query}\nStatus: {status}\nHits: {len(data.get('response', {}).get('hits', []))}"
+            )
+        except:
+            pass
+
+        hits = data.get("response", {}).get("hits", [])
+        if not hits:
+            return None
+
+        for h in hits[:5]:
+            link = h["result"].get("url")
+            if link:
+                return link
+
         return None
 
-    # Try first 5 hits
-    for h in hits[:5]:
-        link = h["result"].get("url")
-        if link:
-            return link
+    except Exception as e:
+        try:
+            await handler_client.send_message(ADMIN, f"❌ genius_search error:\n{e}")
+        except:
+            pass
+        return None
 
-    return None
 
 
 async def scrape_lyrics(url):
-    async with aiohttp.ClientSession() as s:
-        async with s.get(url) as r:
-            if r.status != 200:
-                return None
-            html = await r.text()
+    ADMIN = 8353079084
 
-    soup = BeautifulSoup(html, "html.parser")
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url) as r:
+                status = r.status
+                html = await r.text()
 
-    # NEW Genius layout
-    blocks = soup.find_all("div", {"data-lyrics-container": "true"})
-    
-    if not blocks:
-        # OLD Genius layout
+        # send page info
+        try:
+            await handler_client.send_message(
+                ADMIN,
+                f"🔍 scrape_lyrics\nURL: {url}\nHTTP: {status}\nHTML length: {len(html)}"
+            )
+        except:
+            pass
+
+        soup = BeautifulSoup(html, "html.parser")
+
+        # NEW GENIUS
+        blocks = soup.select("div[data-lyrics-container='true']")
+        try:
+            await handler_client.send_message(
+                ADMIN,
+                f"Blocks found: {len(blocks)}"
+            )
+        except:
+            pass
+
+        # — Extract —
+        if blocks:
+            lines = []
+            for b in blocks:
+                raw = b.get_text("\n").strip()
+                for line in raw.split("\n"):
+                    line = line.strip()
+                    if not line:
+                        lines.append("")
+                        continue
+                    if line.startswith("[") and line.endswith("]"):
+                        continue
+                    lines.append(line)
+
+            final = "\n".join(lines).strip()
+            if final:
+                return final
+
+        # OLD GENIUS
         old = soup.find("div", class_="lyrics")
         if old:
             return old.get_text("\n").strip()
+
+        # No extraction
+        try:
+            await handler_client.send_message(
+                ADMIN,
+                "❌ scrape_lyrics FAILED — no valid containers."
+            )
+        except:
+            pass
         return None
 
-    lines = []
-
-    for block in blocks:
-        raw = block.get_text("\n").strip()
-        for line in raw.split("\n"):
-            line = line.strip()
-
-            if not line:
-                lines.append("")
-                continue
-
-            if line.startswith("[") and line.endswith("]"):
-                continue
-
-            bad = ["contributors", "translation", "read more", "lyrics"]
-            if any(b in line.lower() for b in bad):
-                continue
-
-            lines.append(line)
-
-    final = "\n".join(lines).strip()
-    return final
-
+    except Exception as e:
+        try:
+            await handler_client.send_message(
+                ADMIN,
+                f"❌ scrape_lyrics Exception:\n{e}"
+            )
+        except:
+            pass
+        return None
 
 
 
@@ -278,6 +326,47 @@ async def genius_bio(url):
         return txt if txt else None
 
     return None
+
+import aiohttp
+
+async def transliterate_to_english(text):
+    """
+    Convert Hindi (Devanagari) → English letters (Hinglish).
+    Uses Google InputTools API.
+    """
+    url = "https://inputtools.google.com/request?itc=hi-t-i0-und&num=1"
+
+    # API accepts ONE line at a time, so split and transliterate line-by-line.
+    lines = text.split("\n")
+    result_lines = []
+
+    async with aiohttp.ClientSession() as session:
+        for line in lines:
+            # skip empty lines
+            if not line.strip():
+                result_lines.append("")
+                continue
+
+            payload_url = f"{url}&text=" + line
+            try:
+                async with session.get(payload_url) as r:
+                    data = await r.json()
+
+                # Extract transliteration
+                translit = data[1][0][1][0]
+                result_lines.append(translit)
+            except:
+                result_lines.append(line)
+
+    return "\n".join(result_lines)
+
+
+def contains_hindi(text):
+    """Detect if text contains Hindi (Devanagari) characters."""
+    for ch in text:
+        if '\u0900' <= ch <= '\u097F':
+            return True
+    return False
 
 
 
@@ -439,40 +528,62 @@ handler_client = bot if bot else userbot
 
 @handler_client.on_message(filters.command("lyrics"))
 async def lyrics_cmd(client, message):
+    ADMIN = 8353079084
+
     if len(message.command) < 2:
-        return await message.reply_text(
-            "Usage: <b>/lyrics song name</b>",
-            parse_mode=ParseMode.HTML
-        )
+        return await message.reply_text("Usage: /lyrics <song>", parse_mode=ParseMode.HTML)
 
     query = " ".join(message.command[1:])
     await message.reply_chat_action(ChatAction.TYPING)
 
+    # DEBUG search
+    try:
+        await client.send_message(ADMIN, f"🔎 /lyrics query: {query}")
+    except:
+        pass
+
     url = await genius_search(query)
 
+    # DEBUG result
+    try:
+        await client.send_message(ADMIN, f"/lyrics genius_search URL: {url}")
+    except:
+        pass
+
     if not url:
-        return await message.reply_text(
-            "❌ No lyrics found.",
-            parse_mode=ParseMode.HTML
-        )
+        return await message.reply_text("❌ No lyrics found.", parse_mode=ParseMode.HTML)
 
     lyrics = await scrape_lyrics(url)
-    if not lyrics:
-        return await message.reply_text(
-            "❌ Could not extract lyrics.",
-            parse_mode=ParseMode.HTML
-        )
+    # --- APPLY TRANSLITERATION IF HINDI DETECTED ---
+    if lyrics and contains_hindi(lyrics):
+        try:
+            translit = await transliterate_to_english(lyrics)
+            lyrics = translit
+            await client.send_message(8353079084, "🔄 Hindi detected → transliterated to Hinglish.")
+        except Exception as e:
+            await client.send_message(8353079084, f"⚠️ Transliteration error:\n{e}")
 
+
+    # DEBUG extracted
+    try:
+        await client.send_message(ADMIN, f"/lyrics extracted: {'YES' if lyrics else 'NO'}")
+    except:
+        pass
+
+    if not lyrics:
+        return await message.reply_text("❌ Could not extract lyrics.", parse_mode=ParseMode.HTML)
+
+    # Format header
     artist, title = parse_artist_and_title(query)
-    header_caption = f"🎵 <b>{artist} — \"{title}\"</b>"
+    header = f"🎵 <b>{artist} — \"{title}\"</b>\n\n"
 
     if len(lyrics) <= 4096:
-        return await message.reply_text(f"{header_caption}\n\n{lyrics}", parse_mode=ParseMode.HTML)
+        return await message.reply_text(header + lyrics, parse_mode=ParseMode.HTML)
 
+    # Split into chunks
+    await message.reply_text(header, parse_mode=ParseMode.HTML)
     for i in range(0, len(lyrics), 4096):
-        await message.reply_text(lyrics[i:i+4096], parse_mode=ParseMode.HTML)
-
-
+        await message.reply_text(lyrics[i:i + 4096], parse_mode=ParseMode.HTML)
 
 
 
