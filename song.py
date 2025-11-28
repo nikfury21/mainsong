@@ -191,56 +191,50 @@ async def rapid_youtube_search(session, query: str):
 
 
 from urllib.parse import quote
-
 async def genius_search(query):
     ADMIN = 8353079084
 
-    if not GENIUS_TOKEN:
-        return None
-
-    url = f"https://api.genius.com/search?q={quote(query)}"
+    search_url = "https://genius.com/search?q=" + quote(query)
     headers = {
-        "Authorization": f"Bearer {GENIUS_TOKEN}",
-        "User-Agent": "Mozilla/5.0"
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://www.google.com/"
     }
 
-    async with aiohttp.ClientSession() as s:
-        async with s.get(url, headers=headers) as r:
-            status = r.status
-            data = await r.json()
-
     try:
-        await handler_client.send_message(
-            ADMIN,
-            f"🔍 genius_search\nQuery: {query}\nStatus: {status}"
-        )
-    except:
-        pass
+        async with aiohttp.ClientSession() as s:
+            async with s.get(search_url, headers=headers) as r:
+                html = await r.text()
 
-    hits = data.get("response", {}).get("hits", [])
-    if not hits:
+        # Debug HTML length
+        try:
+            await handler_client.send_message(
+                ADMIN,
+                f"🔍 genius_search (HTML SCRAPER)\nQuery: {query}\nHTML_len: {len(html)}"
+            )
+        except:
+            pass
+
+        soup = BeautifulSoup(html, "html.parser")
+
+        # Genius search page uses <a class="mini_card">
+        hits = soup.select("a.mini_card")
+
+        if not hits:
+            return None
+
+        for h in hits:
+            url = h.get("href")
+            if url and url.startswith("https://genius.com/"):
+                return url
+
         return None
 
-    q = query.lower()
-
-    # 1. Exact match on both artist + title
-    for h in hits:
-        title = (h["result"]["title"] or "").lower()
-        artist = (h["result"]["primary_artist"]["name"] or "").lower()
-        if any(k in q for k in title.split()) and any(k in q for k in artist.split()):
-            return h["result"]["url"]
-
-    # 2. Partial match
-    for h in hits:
-        title = (h["result"]["title"] or "").lower()
-        if title in q or q in title:
-            return h["result"]["url"]
-
-    # 3. Fallback to safest hit
-    for h in hits:
-        return h["result"].get("url")
-
-    return None
+    except Exception as e:
+        try:
+            await handler_client.send_message(ADMIN, f"❌ genius_search ERROR:\n{e}")
+        except:
+            pass
+        return None
 
 
 
@@ -330,6 +324,65 @@ async def scrape_lyrics(url):
 
         return None
 
+
+@handler_client.on_message(filters.command("lyrics"))
+async def lyrics_cmd(client, message):
+    ADMIN = 8353079084
+
+    if len(message.command) < 2:
+        return await message.reply_text("Usage: /lyrics <song>", parse_mode=ParseMode.HTML)
+
+    query = " ".join(message.command[1:])
+    await message.reply_chat_action(ChatAction.TYPING)
+
+    # DEBUG search
+    try:
+        await client.send_message(ADMIN, f"🔎 /lyrics query: {query}")
+    except:
+        pass
+
+    url = await genius_search(query)
+
+    # DEBUG result
+    try:
+        await client.send_message(ADMIN, f"/lyrics genius_search URL: {url}")
+    except:
+        pass
+
+    if not url:
+        return await message.reply_text("❌ No lyrics found.", parse_mode=ParseMode.HTML)
+
+    lyrics = await scrape_lyrics(url)
+    # --- APPLY TRANSLITERATION IF HINDI DETECTED ---
+    if lyrics and contains_hindi(lyrics):
+        try:
+            translit = await transliterate_to_english(lyrics)
+            lyrics = translit
+            await client.send_message(8353079084, "🔄 Hindi detected → transliterated to Hinglish.")
+        except Exception as e:
+            await client.send_message(8353079084, f"⚠️ Transliteration error:\n{e}")
+
+
+    # DEBUG extracted
+    try:
+        await client.send_message(ADMIN, f"/lyrics extracted: {'YES' if lyrics else 'NO'}")
+    except:
+        pass
+
+    if not lyrics:
+        return await message.reply_text("❌ Could not extract lyrics.", parse_mode=ParseMode.HTML)
+
+    # Format header
+    artist, title = parse_artist_and_title(query)
+    header = f"🎵 <b>{artist} — \"{title}\"</b>\n\n"
+
+    if len(lyrics) <= 4096:
+        return await message.reply_text(header + lyrics, parse_mode=ParseMode.HTML)
+
+    # Split into chunks
+    await message.reply_text(header, parse_mode=ParseMode.HTML)
+    for i in range(0, len(lyrics), 4096):
+        await message.reply_text(lyrics[i:i + 4096], parse_mode=ParseMode.HTML)
 
 
 
