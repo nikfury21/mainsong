@@ -197,7 +197,7 @@ async def genius_search(client, query):
 
     search_url = "https://genius.com/search?q=" + quote(query)
     headers = {
-        "User-Agent": "Mozilla/5.0",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
         "Referer": "https://www.google.com/"
     }
 
@@ -216,14 +216,30 @@ async def genius_search(client, query):
             pass
 
         soup = BeautifulSoup(html, "html.parser")
+
+        # --- TRY 1: Old mini-card layout ---
         hits = soup.select("a.mini_card")
+        if hits:
+            for h in hits:
+                url = h.get("href")
+                if url and url.startswith("https://genius.com/"):
+                    return url
 
-        if not hits:
-            return None
+        # --- TRY 2: New search results layout ---
+        hits = soup.select(".search_result")
+        if hits:
+            for h in hits:
+                link = h.select_one("a")
+                if link:
+                    url = link.get("href")
+                    if url and url.startswith("https://genius.com/"):
+                        return url
 
-        for h in hits:
-            url = h.get("href")
-            if url and url.startswith("https://genius.com/"):
+        # --- TRY 3: Fallback: any link to Genius lyrics page ---
+        all_links = soup.find_all("a", href=True)
+        for a in all_links:
+            url = a["href"]
+            if url.startswith("https://genius.com/") and url.endswith("-lyrics"):
                 return url
 
         return None
