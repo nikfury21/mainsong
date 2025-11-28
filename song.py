@@ -195,62 +195,51 @@ from urllib.parse import quote
 async def genius_search(client, query):
     ADMIN = 8353079084
 
-    search_url = "https://genius.com/search?q=" + quote(query)
+    google_url = "https://www.google.com/search?q=" + quote(f"{query} genius lyrics")
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Accept-Language": "en-US,en;q=0.9",
         "Referer": "https://www.google.com/"
     }
 
     try:
         async with aiohttp.ClientSession() as s:
-            async with s.get(search_url, headers=headers) as r:
+            async with s.get(google_url, headers=headers) as r:
                 html = await r.text()
 
-        # Debug
+        # Debug length
         try:
             await client.send_message(
                 ADMIN,
-                f"🔍 genius_search (HTML SCRAPER)\nQuery: {query}\nHTML_len: {len(html)}"
+                f"🔍 genius_search GOOGLE\nQuery: {query}\nHTML_len: {len(html)}"
             )
         except:
             pass
 
         soup = BeautifulSoup(html, "html.parser")
 
-        # --- TRY 1: Old mini-card layout ---
-        hits = soup.select("a.mini_card")
-        if hits:
-            for h in hits:
-                url = h.get("href")
-                if url and url.startswith("https://genius.com/"):
-                    return url
+        # Google results → look for Genius URLs
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
 
-        # --- TRY 2: New search results layout ---
-        hits = soup.select(".search_result")
-        if hits:
-            for h in hits:
-                link = h.select_one("a")
-                if link:
-                    url = link.get("href")
-                    if url and url.startswith("https://genius.com/"):
-                        return url
+            # Extract direct links from Google wrapper URLs
+            if href.startswith("/url?q="):
+                real = href.split("/url?q=")[1].split("&")[0]
+                if real.startswith("https://genius.com/") and real.endswith("-lyrics"):
+                    return real
 
-        # --- TRY 3: Fallback: any link to Genius lyrics page ---
-        all_links = soup.find_all("a", href=True)
-        for a in all_links:
-            url = a["href"]
-            if url.startswith("https://genius.com/") and url.endswith("-lyrics"):
-                return url
+            # Direct link (rare)
+            if href.startswith("https://genius.com/") and href.endswith("-lyrics"):
+                return href
 
         return None
 
     except Exception as e:
         try:
-            await client.send_message(ADMIN, f"❌ genius_search ERROR:\n{e}")
+            await client.send_message(ADMIN, f"❌ genius_search GOOGLE ERROR:\n{e}")
         except:
             pass
         return None
-
 
 
 async def scrape_lyrics(url):
