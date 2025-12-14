@@ -44,6 +44,8 @@ RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 TARGET_GROUP_ID = os.getenv("TARGET_GROUP_ID", None)  # optional group id to forward results to
 MODS = [8353079084, 8355303766]  # your Telegram ID(s)
 
+
+
 if not (API_ID and API_HASH and USERBOT_SESSION):
     raise RuntimeError("Please set API_ID, API_HASH and USERBOT_SESSION environment variables.")
 
@@ -61,11 +63,21 @@ handler_client = bot if bot else userbot
 
 
 
+
+
 # ======================================
 # CORRECT QUEUE MODEL
 # ======================================
 current_song = {}      # chat_id -> dict (NOW PLAYING)
 music_queue = {}       # chat_id -> list of next songs
+chat_locks = {}   # chat_id -> asyncio.Lock()
+
+def get_chat_lock(chat_id: int) -> asyncio.Lock:
+    """Return a per-chat asyncio.Lock (create if missing)."""
+    if chat_id not in chat_locks:
+        chat_locks[chat_id] = asyncio.Lock()
+    return chat_locks[chat_id]
+# -----------------------------------------------------------------
 
 
 def add_to_queue(chat_id, song):
@@ -540,45 +552,33 @@ async def play_replied_audio(client, message):
 
 @handler_client.on_message(filters.command("play"))
 async def play_command(client: Client, message: Message):
-    """/play <query> - SAME SEARCH RESULT AS /song"""
+    """/play <query> - same search/result as /song but robust to race conditions"""
     query = " ".join(message.command[1:]).strip()
     if not query:
         await message.reply_text("Please provide a song name after /play.")
         return
-    
-    # Send sticker when command starts
+
     try:
         await message.reply_sticker("CAACAgQAAxUAAWkPQRUy37GVR42R2w26sKQx4FKBAAKrGQACQwl4UJ1u2xb-mMqINgQ")
-    except Exception:
+    except:
         pass
 
-    # ─────────────────────────────────────────
-    # 🔍 STEP 1 — HTML YouTube Search (Same as /song)
-    # ─────────────────────────────────────────
     async with aiohttp.ClientSession() as session:
-
         vid = await html_youtube_first(query)
         if not vid:
             await message.reply_text("❌ No matching YouTube results.")
             return
 
-        # Thumbnail
         thumb_url = f"https://img.youtube.com/vi/{vid}/hqdefault.jpg"
 
-        # ─────────────────────────────────────────
-        # 🎧 STEP 2 — Fetch MP3 (Same as /song)
-        # ─────────────────────────────────────────
         mp3 = await get_mp3_url_rapidapi(session, vid)
         if not mp3:
             await message.reply_text("❌ Could not fetch audio link.")
             return
 
-        # ─────────────────────────────────────────
-        # 🏷️ STEP 3 — Fetch Title + Duration (Optional)
-        # ─────────────────────────────────────────
+        # get title + duration if possible
         video_title = query
         duration_seconds = 0
-
         try:
             yt_api_url = (
                 f"https://www.googleapis.com/youtube/v3/videos"
@@ -600,144 +600,275 @@ async def play_command(client: Client, message: Message):
     readable_duration = format_time(duration_seconds or 0)
     chat_id = message.chat.id
 
-    # ─────────────────────────────────────────
-    # 🎵 CHECK IF SOMETHING IS ALREADY PLAYING (QUEUE)
-    # ─────────────────────────────────────────
-    try:
-        active_calls_dict = call_py.calls
-        if asyncio.iscoroutine(active_calls_dict):
-            active_calls_dict = await active_calls_dict
-        active_chats = list(getattr(active_calls_dict, "keys", lambda: [])())
-    except Exception:
-        active_chats = []
+    # --- Acquire per-chat lock to prevent races ---
+    lock = get_chat_lock(chat_id)
+    async with lock:
+        # if something is already playing -> add to queue
+        if chat_id in current_song:
+            pos = add_to_queue(chat_id, {
+                "title": video_title,
+                "url": mp3,
+                "vid": vid,
+                "user": message.from_user,
+                "duration": duration_seconds or 180
+            })
 
-    if chat_id in current_song:
-        pos = add_to_queue(chat_id, {
-            "title": video_title,
-            "url": mp3,
-            "vid": vid,
-            "user": message.from_user,
-            "duration": duration_seconds or 180
-        })
-
-        await message.reply_text(
-            f"<b>➜ Added to queue at</b> <u>#{pos}</u>\n\n"
-            f"<b>‣ Title:</b> <i>{video_title}</i>\n"
-            f"<b>‣ Duration:</b> <u>{readable_duration}</u>\n"
-            f"<b>‣ Requested by:</b> <a href='tg://user?id={message.from_user.id}'>{message.from_user.first_name}</a>",
-            parse_mode=ParseMode.HTML,
-        )
-        return
-
-
-    # ─────────────────────────────────────────
-    # ▶ PLAY NOW IN VC
-    # ─────────────────────────────────────────
-    try:
-        await call_py.play(
-            chat_id,
-            MediaStream(
-                mp3,
-                video_flags=MediaStream.Flags.IGNORE
+            await message.reply_text(
+                f"<b>➜ Added to queue at</b> <u>#{pos}</u>\n\n"
+                f"<b>‣ Title:</b> <i>{video_title}</i>\n"
+                f"<b>‣ Duration:</b> <u>{readable_duration}</u>\n"
+                f"<b>‣ Requested by:</b> <a href='tg://user?id={message.from_user.id}'>{message.from_user.first_name}</a>",
+                parse_mode=ParseMode.HTML,
             )
-        )
+            return
 
+        # Nothing playing -> start playback
+        try:
+            # Ensure we stop any stray stream before starting
+            try:
+                if hasattr(call_py, "stop_stream"):
+                    await call_py.stop_stream(chat_id)
+                elif hasattr(call_py, "leave_call"):
+                    # leave then join is handled by PyTgCalls automatically when playing
+                    try:
+                        await call_py.leave_call(chat_id)
+                    except:
+                        pass
+            except:
+                pass
 
-        current_song[chat_id] = {
-            "title": video_title,
-            "url": mp3,
-            "vid": vid,
-            "user": message.from_user,
-            "duration": duration_seconds or 180,
-            "start_time": time.time()
-        }
+            # start stream
+            await call_py.play(
+                chat_id,
+                MediaStream(
+                    mp3,
+                    video_flags=MediaStream.Flags.IGNORE
+                )
+            )
 
+            current_song[chat_id] = {
+                "title": video_title,
+                "url": mp3,
+                "vid": vid,
+                "user": message.from_user,
+                "duration": duration_seconds or 180,
+                "start_time": time.time()
+            }
 
-        caption = (
-            "<blockquote>"
-            "<b>🎧 <u>hulalala Streaming (Local Playback)</u></b>\n\n"
-            f"<b>❍ Title:</b> <i>{video_title}</i>\n"
-            f"<b>❍ Requested by:</b> "
-            f"<a href='tg://user?id={message.from_user.id}'><u>{message.from_user.first_name}</u></a>"
-            "</blockquote>"
-        )
+            caption = (
+                "<blockquote>"
+                "<b>🎧 <u>Streaming (Local Playback)</u></b>\n\n"
+                f"<b>❍ Title:</b> <i>{video_title}</i>\n"
+                f"<b>❍ Requested by:</b> "
+                f"<a href='tg://user?id={message.from_user.id}'><u>{message.from_user.first_name}</u></a>"
+                "</blockquote>"
+            )
 
-        bar = get_progress_bar(0, duration_seconds or 180)
+            bar = get_progress_bar(0, duration_seconds or 180)
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
+                 InlineKeyboardButton("▶ Resume", callback_data="resume"),
+                 InlineKeyboardButton("⏭ Skip", callback_data="skip")],
+                [InlineKeyboardButton(bar, callback_data="progress")]
+            ])
 
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
-             InlineKeyboardButton("▶ Resume", callback_data="resume"),
-             InlineKeyboardButton("⏭ Skip", callback_data="skip")],
-            [InlineKeyboardButton(bar, callback_data="progress")]
-        ])
+            msg = await message.reply_photo(
+                photo=thumb_url,
+                caption=caption,
+                reply_markup=kb,
+                parse_mode=ParseMode.HTML
+            )
 
-        msg = await message.reply_photo(
-            photo=thumb_url,
-            caption=caption,
-            reply_markup=kb,
-            parse_mode=ParseMode.HTML
-        )
+            asyncio.create_task(update_progress_message(chat_id, msg, time.time(), duration_seconds or 180, caption))
+            asyncio.create_task(auto_next_timer(chat_id, duration_seconds or 180))
 
-        # Start progress ui
-        asyncio.create_task(update_progress_message(chat_id, msg, time.time(), duration_seconds or 180, caption))
-        asyncio.create_task(auto_next_timer(chat_id, duration_seconds or 180))
-
-    except Exception as e:
-        await message.reply_text(f"❌ Voice playback error:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
-
-
+        except Exception as e:
+            await message.reply_text(f"❌ Voice playback error:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
 
 
 
 
 
 async def handle_next(chat_id):
-    # no songs in queue
-    if chat_id not in music_queue or not music_queue[chat_id]:
-        current_song.pop(chat_id, None)
-        music_queue.pop(chat_id, None)
+    lock = get_chat_lock(chat_id)
+    async with lock:
+        # no songs in queue
+        if chat_id not in music_queue or not music_queue[chat_id]:
+            current_song.pop(chat_id, None)
+            music_queue.pop(chat_id, None)
+            try:
+                await call_py.leave_call(chat_id)
+            except:
+                pass
+            try:
+                await bot.send_message(chat_id, "✅ Queue finished and cleared.", parse_mode=ParseMode.HTML)
+            except:
+                pass
+            return
+
+        # get next song
+        next_song = music_queue[chat_id].pop(0)
+        current_song[chat_id] = next_song
+        next_song["start_time"] = time.time()
 
         try:
-            await call_py.leave_call(chat_id)
+            # switch stream (prefer change_stream if available)
+            if hasattr(call_py, "change_stream"):
+                await call_py.change_stream(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
+            else:
+                await call_py.play(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
+
+            thumb = f"https://img.youtube.com/vi/{next_song.get('vid')}/hqdefault.jpg"
+            caption = (
+                "<blockquote>"
+                "<b>🎧 <u>Now Playing</u></b>\n\n"
+                f"<b>❍ Title:</b> <i>{next_song['title']}</i>\n"
+                f"<b>❍ Requested by:</b> "
+                f"<a href='tg://user?id={next_song['user'].id}'><u>{next_song['user'].first_name}</u></a>"
+                "</blockquote>"
+            )
+
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
+                 InlineKeyboardButton("▶ Resume", callback_data="resume"),
+                 InlineKeyboardButton("⏭ Skip", callback_data="skip")]
+            ])
+
+            msg = await bot.send_photo(chat_id, thumb, caption=caption, reply_markup=kb)
+            asyncio.create_task(auto_next_timer(chat_id, next_song.get("duration", 180)))
+
+        except Exception as e:
+            try:
+                await bot.send_message(chat_id, f"⚠️ Could not auto-play next queued song:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
+            except:
+                pass
+
+@handler_client.on_message(filters.command("fplay"))
+async def fplay_command(client: Client, message: Message):
+    """Force play a song immediately, stopping current playback. The previous current song is moved to the front of the queue."""
+    query = " ".join(message.command[1:]).strip()
+    if not query:
+        await message.reply_text("Provide a song name after /fplay.")
+        return
+
+    chat_id = message.chat.id
+
+    async with aiohttp.ClientSession() as session:
+        vid = await html_youtube_first(query)
+        if not vid:
+            await message.reply_text("❌ No matching YouTube results.")
+            return
+
+        mp3 = await get_mp3_url_rapidapi(session, vid)
+        if not mp3:
+            await message.reply_text("❌ Could not fetch audio link.")
+            return
+
+        # get title/duration best-effort
+        video_title = query
+        duration_seconds = 0
+        try:
+            yt_api_url = (
+                f"https://www.googleapis.com/youtube/v3/videos"
+                f"?part=snippet,contentDetails&id={vid}&key={YOUTUBE_API_KEY}"
+            )
+            async with session.get(yt_api_url) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    items = data.get("items")
+                    if items:
+                        snippet = items[0].get("snippet", {})
+                        content = items[0].get("contentDetails", {})
+                        video_title = snippet.get("title", query)
+                        duration_seconds = iso8601_to_seconds(content.get("duration"))
         except:
             pass
 
-        await bot.send_message(chat_id, "✅ Queue finished and cleared.", parse_mode=ParseMode.HTML)
-        return
+    lock = get_chat_lock(chat_id)
+    async with lock:
+        # if a song is playing, move it to front of queue before replacing
+        if chat_id in current_song:
+            prev = current_song.pop(chat_id, None)
+            if prev:
+                music_queue.setdefault(chat_id, []).insert(0, prev)
+            # stop current playback
+            try:
+                if hasattr(call_py, "stop_stream"):
+                    await call_py.stop_stream(chat_id)
+                elif hasattr(call_py, "leave_call"):
+                    await call_py.leave_call(chat_id)
+            except:
+                pass
 
-    # get next song
-    next_song = music_queue[chat_id].pop(0)
-    current_song[chat_id] = next_song
-    next_song["start_time"] = time.time()
+        # start forced song
+        try:
+            await call_py.play(chat_id, MediaStream(mp3, video_flags=MediaStream.Flags.IGNORE))
+            current_song[chat_id] = {
+                "title": video_title,
+                "url": mp3,
+                "vid": vid,
+                "user": message.from_user,
+                "duration": duration_seconds or 180,
+                "start_time": time.time()
+            }
+            await message.reply_text(f"⏯️ Forced play: <b>{video_title}</b>", parse_mode=ParseMode.HTML)
 
-    try:
-        # switch stream
-        if hasattr(call_py, "change_stream"):
-            await call_py.change_stream(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
-        else:
-            await call_py.play(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
+            # start auto-next timer
+            asyncio.create_task(auto_next_timer(chat_id, duration_seconds or 180))
+        except Exception as e:
+            await message.reply_text(f"❌ Could not force-play: {e}")
 
-        thumb = f"https://img.youtube.com/vi/{next_song['vid']}/hqdefault.jpg"
-        caption = (
-            "<blockquote>"
-            "<b>🎧 <u>Now Playing</u></b>\n\n"
-            f"<b>❍ Title:</b> <i>{next_song['title']}</i>\n"
-            f"<b>❍ Requested by:</b> "
-            f"<a href='tg://user?id={next_song['user'].id}'><u>{next_song['user'].first_name}</u></a>"
-            "</blockquote>"
-        )
 
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
-             InlineKeyboardButton("▶ Resume", callback_data="resume"),
-             InlineKeyboardButton("⏭ Skip", callback_data="skip")]
-        ])
+@handler_client.on_message(filters.command("reboot"))
+async def reboot_command(client: Client, message: Message):
+    user_id = message.from_user.id
+    if user_id not in MODS:
+        return await message.reply_text("❌ You are not authorized to reboot the bot.")
 
-        msg = await bot.send_photo(chat_id, thumb, caption=caption, reply_markup=kb)
-        asyncio.create_task(auto_next_timer(chat_id, next_song["duration"]))
+    await message.reply_text("♻️ Rebooting music service: clearing queues and restarting voice clients...")
 
-    except Exception as e:
-        await bot.send_message(chat_id, f"⚠️ Could not auto-play next queued song:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
+    async def _do_reboot():
+        # clear queues
+        music_queue.clear()
+        current_song.clear()
+        # stop any running streams and leave calls
+        try:
+            # try to iterate call_py.calls safely
+            calls_dict = getattr(call_py, "calls", {}) or {}
+            # if calls_dict looks like a dict-like
+            try:
+                chat_ids = list(calls_dict.keys())
+            except:
+                chat_ids = []
+            for cid in chat_ids:
+                try:
+                    if hasattr(call_py, "stop_stream"):
+                        await call_py.stop_stream(cid)
+                    elif hasattr(call_py, "leave_call"):
+                        await call_py.leave_call(cid)
+                except:
+                    pass
+        except:
+            pass
+
+        # try full stop then start
+        try:
+            await _shutdown()
+            await asyncio.sleep(1)
+            await _startup()
+        except Exception as e:
+            try:
+                await message.reply_text(f"⚠️ Reboot attempted but error occurred: {e}")
+            except:
+                pass
+            return
+
+        try:
+            await message.reply_text("✅ Reboot complete.")
+        except:
+            pass
+
+    asyncio.create_task(_do_reboot())
 
 
 
