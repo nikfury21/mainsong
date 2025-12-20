@@ -40,7 +40,6 @@ API_HASH = os.getenv("API_HASH")
 USERBOT_SESSION = os.getenv("USERBOT_SESSION")   # session string for user account
 BOT_TOKEN = os.getenv("BOT_TOKEN", None)         # optional: bot account token
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
-RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 TARGET_GROUP_ID = os.getenv("TARGET_GROUP_ID", None)  # optional group id to forward results to
 MODS = [8353079084, 8355303766]  # your Telegram ID(s)
 
@@ -147,28 +146,6 @@ def parse_artist_and_title(query: str):
     # Fallback
     return "Unknown Artist", q
 
-
-
-
-async def rapid_youtube_search(session, query: str):
-    url = "https://youtube-search-results.p.rapidapi.com/youtube-search/"
-    headers = {
-        "x-rapidapi-key": RAPIDAPI_KEY,
-        "x-rapidapi-host": "youtube-search-results.p.rapidapi.com"
-    }
-    params = {"q": query}
-
-    async with session.get(url, headers=headers, params=params) as r:
-        if r.status != 200:
-            return None
-        data = await r.json()
-
-    videos = data.get("items", [])
-    for item in videos:
-        if item.get("type") == "video":
-            return item.get("id")  # videoId
-
-    return None
 
 
 
@@ -299,36 +276,41 @@ async def search_youtube_video_id(session: aiohttp.ClientSession, query: str):
                 return items[0]["id"]["videoId"]
     return None
 
-async def get_mp3_url_rapidapi(session: aiohttp.ClientSession, video_id: str):
-    """Use youtube-mp36 RapidAPI to get mp3 link (6 attempts)."""
-    if not RAPIDAPI_KEY:
-        return None
-    url = "https://youtube-mp36.p.rapidapi.com/dl"
-    headers = {
-        "X-RapidAPI-Key": RAPIDAPI_KEY,
-        "X-RapidAPI-Host": "youtube-mp36.p.rapidapi.com"
+def ytdlp_get_audio_url(video_id: str):
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "format": "bestaudio/best",
+        "noplaylist": True,
+        "skip_download": True,
+        "cookies": "cookies.txt",
     }
-    params = {"id": video_id}
-    for attempt in range(6):
-        try:
-            async with session.get(url, headers=headers, params=params, timeout=20) as resp:
-                # try/except for JSON parsing
-                try:
-                    data = await resp.json()
-                except Exception:
-                    data = {}
-                log.debug("RapidAPI attempt %d status=%s keys=%s", attempt+1, getattr(resp, "status", None), list(data.keys()) if isinstance(data, dict) else None)
-                if getattr(resp, "status", None) == 200 and data.get("status") == "ok" and data.get("link"):
-                    return data["link"]
-                if data.get("status") == "processing":
-                    await asyncio.sleep(4)
-                else:
-                    await asyncio.sleep(2)
-        except Exception as e:
-            log.debug("RapidAPI fetch exception attempt %d: %s", attempt+1, e)
-            await asyncio.sleep(2)
-    return None
 
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+        return info["url"], info.get("duration", 180), info.get("title", "Unknown Title")
+
+def ytdlp_download_mp3(query: str, out_dir: str):
+    ydl_opts = {
+        "format": "bestaudio/best",
+        "outtmpl": os.path.join(out_dir, "%(title)s.%(ext)s"),
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "postprocessors": [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": "192",
+        }],
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(f"ytsearch1:{query}", download=True)
+        entry = info["entries"][0]
+        filename = ydl.prepare_filename(entry)
+        mp3_path = os.path.splitext(filename)[0] + ".mp3"
+        return mp3_path, entry.get("title", query), entry.get("duration", 180)
 
 # -------------------------
 # Command handlers
@@ -403,35 +385,25 @@ async def song_command(client: Client, message: Message):
 
     async with aiohttp.ClientSession() as session:
 
-        # Step 3: Get MP3 link
-        await safe_edit(progress_msg, _single_step_text(3, 6, "Fetching audio file…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
+        # Step 3: Download MP3
+        await safe_edit(progress_msg, _single_step_text(3, 5, "Downloading audio…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
 
-        mp3_url = await get_mp3_url_rapidapi(session, video_id)
-        if not mp3_url:
-            await safe_edit(progress_msg, _single_step_text(3, 6, "❌ MP3 link not found."), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
-            return
-
-        await client.send_message(ADMIN, f"RapidAPI MP3 link OK")
 
         # Step 4: Download MP3
-        await safe_edit(progress_msg, _single_step_text(4, 6, "Retrieving data… 0%"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
+        await safe_edit(progress_msg, _single_step_text(4, 6, "Downloading audio…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
 
         try:
-            async with session.get(mp3_url) as resp:
-                mp3_bytes = await resp.read()
-
+            temp_dir = tempfile.mkdtemp()
+            temp_path, video_title, duration = ytdlp_download_mp3(user_query, temp_dir)
         except Exception as e:
-            await client.send_message(ADMIN, f"Download error: {e}")
             await safe_edit(progress_msg, _single_step_text(4, 6, "❌ Download failed."), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
             return
+
 
         # Step 5: Save to temp
         await safe_edit(progress_msg, _single_step_text(5, 6, "Finalizing audio…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
 
-        fd, temp_path = tempfile.mkstemp(suffix=".mp3")
-        os.close(fd)
-        with open(temp_path, "wb") as f:
-            f.write(mp3_bytes)
+        
 
         # Step 6: Upload
         await safe_edit(progress_msg, _single_step_text(6, 6, "Sending audio…"), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
@@ -563,40 +535,25 @@ async def play_command(client: Client, message: Message):
     except:
         pass
 
-    async with aiohttp.ClientSession() as session:
-        vid = await html_youtube_first(query)
-        if not vid:
-            await message.reply_text("❌ No matching YouTube results.")
-            return
+    vid = await html_youtube_first(query)
+    if not vid:
+        await message.reply_text("❌ No matching YouTube results.")
+        return
 
-        thumb_url = f"https://img.youtube.com/vi/{vid}/hqdefault.jpg"
+    thumb_url = f"https://img.youtube.com/vi/{vid}/hqdefault.jpg"
 
-        mp3 = await get_mp3_url_rapidapi(session, vid)
-        if not mp3:
-            await message.reply_text("❌ Could not fetch audio link.")
-            return
+    try:
+        mp3, duration_seconds, video_title = ytdlp_get_audio_url(vid)
+    except Exception as e:
+        await message.reply_text(
+            f"❌ Audio extraction failed:\n<code>{e}</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
 
-        # get title + duration if possible
-        video_title = query
-        duration_seconds = 0
-        try:
-            yt_api_url = (
-                f"https://www.googleapis.com/youtube/v3/videos"
-                f"?part=snippet,contentDetails&id={vid}&key={YOUTUBE_API_KEY}"
-            )
-            async with session.get(yt_api_url) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    items = data.get("items")
-                    if items:
-                        snippet = items[0].get("snippet", {})
-                        content = items[0].get("contentDetails", {})
-                        video_title = snippet.get("title", query)
-                        iso_dur = content.get("duration")
-                        duration_seconds = iso8601_to_seconds(iso_dur)
-        except:
-            pass
 
+
+               
     readable_duration = format_time(duration_seconds or 0)
     chat_id = message.chat.id
 
@@ -759,7 +716,8 @@ async def fplay_command(client: Client, message: Message):
             await message.reply_text("❌ No matching YouTube results.")
             return
 
-        mp3 = await get_mp3_url_rapidapi(session, vid)
+        mp3, duration_seconds, video_title = ytdlp_get_audio_url(vid)
+
         if not mp3:
             await message.reply_text("❌ Could not fetch audio link.")
             return
