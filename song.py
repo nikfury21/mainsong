@@ -283,13 +283,20 @@ def ytdlp_get_audio_url(video_id: str):
         "format": "bestaudio/best",
         "noplaylist": True,
         "skip_download": True,
-        "cookies": "cookies.txt",
+        "cookies": "/etc/secrets/YT_COOKIES",  # Render secret file path
+        "user_agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
     }
 
-
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-        return info["url"], info.get("duration", 180), info.get("title", "Unknown Title")
+        info = ydl.extract_info(
+            f"https://www.youtube.com/watch?v={video_id}",
+            download=False
+        )
+        return info["url"], info.get("duration", 180), info.get("title", "Unknown")
 
 def ytdlp_download_mp3(query: str, out_dir: str):
     ydl_opts = {
