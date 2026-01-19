@@ -580,6 +580,10 @@ async def play_command(client: Client, message: Message):
     chat_id = message.chat.id
 
     # --- Acquire per-chat lock to prevent races ---
+    # 🔥 FIX: clear ghost state if VC ended earlier
+    if chat_id in current_song and chat_id not in vc_active:
+        await cleanup_chat(chat_id)
+
     lock = get_chat_lock(chat_id)
     async with lock:
         # if something is already playing -> add to queue
@@ -805,45 +809,20 @@ async def fplay_command(client: Client, message: Message):
             await message.reply_text(f"❌ Could not force-play: {e}")
 
 
-@handler_client.on_message(filters.command("reboot"))
-async def reboot_command(client: Client, message: Message):
-    user_id = message.from_user.id
-    if user_id not in MODS:
-        return await message.reply_text("❌ You are not authorized to reboot the bot.")
+@handler_client.on_message(filters.command("resetvc"))
+async def reset_vc(client: Client, message: Message):
+    if message.from_user.id not in MODS:
+        return
+
+    chat_id = message.chat.id
+    await cleanup_chat(chat_id)
 
     await message.reply_text(
-        "♻️ Rebooting music service: clearing queues and restarting voice clients..."
+        "• Voice state reset:\n"
+        "• Current song cleared\n"
+        "• Queue cleared\n"
+        "• Timers stopped"
     )
-
-    async def _do_reboot():
-        # ✅ clear queues and states
-        music_queue.clear()
-        current_song.clear()
-        vc_active.clear()
-
-        # ✅ safely leave all active VCs (NO call_py.calls)
-        for chat_id in list(vc_active):
-            try:
-                await call_py.leave_call(chat_id)
-            except:
-                pass
-
-        # ✅ full restart
-        try:
-            await _shutdown()
-            await asyncio.sleep(1)
-            await _startup()
-            await message.reply_text("✅ Reboot complete.")
-        except Exception as e:
-            try:
-                await message.reply_text(
-                    f"⚠️ Reboot attempted but error occurred:\n<code>{e}</code>",
-                    parse_mode=ParseMode.HTML,
-                )
-            except:
-                pass
-
-    asyncio.create_task(_do_reboot())
 
 
 
@@ -851,11 +830,17 @@ async def reboot_command(client: Client, message: Message):
 async def auto_next_timer(chat_id: int, duration: int):
     try:
         await asyncio.sleep(duration)
+
+        # VC already ended → FULL RESET
         if chat_id not in vc_active:
+            await cleanup_chat(chat_id)
             return
+
         await handle_next(chat_id)
+
     except asyncio.CancelledError:
         return
+
 
 
 # When playing a song, we’ll start this timer
@@ -1063,9 +1048,8 @@ try:
     @call_py.on_stream_end()
     async def on_stream_end_handler(_, update):
         chat_id = update.chat_id
-        if chat_id not in vc_active:
-            return
         await handle_next(chat_id)
+
 
 except Exception:
     log.warning("PyTgCalls version may not support on_stream_end, using timer fallback.")
