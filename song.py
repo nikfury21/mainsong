@@ -78,6 +78,22 @@ chat_locks = {}
 vc_active = set()        # chats where bot is in VC
 timers = {}              # chat_id -> auto_next asyncio.Task
 
+async def download_thumbnail(url: str) -> str | None:
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as r:
+                if r.status != 200:
+                    return None
+
+                fd, path = tempfile.mkstemp(suffix=".jpg")
+                os.close(fd)
+
+                with open(path, "wb") as f:
+                    f.write(await r.read())
+
+                return path
+    except:
+        return None
 
 async def get_youtube_details(video_id: str):
     """Return (title, duration_seconds, thumbnail_url)"""
@@ -880,19 +896,48 @@ async def video_command(client: Client, message: Message):
 
         video_path = await api_download_video(vid)
 
+        # ---- DOWNLOAD THUMBNAIL LOCALLY (FIX) ----
+        thumb_path = None
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(thumb_url) as r:
+                    if r.status == 200:
+                        fd, thumb_path = tempfile.mkstemp(suffix=".jpg")
+                        os.close(fd)
+                        with open(thumb_path, "wb") as f:
+                            f.write(await r.read())
+        except:
+            thumb_path = None
+        # ------------------------------------------
+
         await client.send_video(
             chat_id=message.chat.id,
             video=video_path,
+            thumb=thumb_path if thumb_path else None,  # ✅ LOCAL FILE ONLY
             caption=f"🎬 <b>{title}</b>\n⏱ {format_time(duration)}",
-            thumb=thumb_url,
             parse_mode=ParseMode.HTML,
             supports_streaming=True
         )
 
-        os.remove(video_path)
+        # ---- CLEANUP ----
+        try:
+            os.remove(video_path)
+        except:
+            pass
+
+        try:
+            if thumb_path:
+                os.remove(thumb_path)
+        except:
+            pass
+
+        await msg.delete()
 
     except Exception as e:
-        await msg.edit_text(f"❌ Failed to send video:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
+        await msg.edit_text(
+            f"❌ Failed to send video:\n<code>{e}</code>",
+            parse_mode=ParseMode.HTML
+        )
 
 
 
