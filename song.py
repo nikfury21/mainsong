@@ -458,9 +458,29 @@ async def song_command(client: Client, message: Message):
 
         try:
             temp_dir = tempfile.mkdtemp()
+            # fetch real YouTube metadata
+            video_title, duration, thumb_url = await get_youtube_details(video_id)
+
+            # fallback safety
+            video_title = video_title or user_query
+            duration = duration or 0
+
+            # ⛔ duration limit: 2 hours
+            if duration > 7200:
+                await safe_edit(
+                    progress_msg,
+                    _single_step_text(
+                        4, 6,
+                        f"❌ Song too long ({format_time(duration)}).\nMaximum allowed: 2 hours."
+                    ),
+                    ParseMode.HTML,
+                    last_edit_time_holder=last_edit_ref
+                )
+                return
+
+            # now download audio
             temp_path = await api_download_audio(video_id)
-            video_title = user_query
-            duration = 180
+
 
         except Exception as e:
             await safe_edit(progress_msg, _single_step_text(4, 6, "❌ Download failed."), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
@@ -491,12 +511,11 @@ async def song_command(client: Client, message: Message):
 
             # ----- Upload audio with or without thumbnail -----
             # build caption
-            artist, title = parse_artist_and_title(user_query)
-            title = user_query
+            artist, _ = parse_artist_and_title(video_title)
+            title = video_title
 
-            
+            caption = f" <b><u>{artist} - \"{title}\"</u></b>"
 
-            caption = f"🎵 <b><u>{artist} - \"{title}\"</u></b>"
 
 
 
