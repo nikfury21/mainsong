@@ -13,6 +13,8 @@ from pyrogram import Client, filters, idle
 from pyrogram.types import Message
 from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream
+import re
+from functools import partial
 # --- Compatibility handling for PyTgCalls versions ---
 try:
     from pytgcalls import StreamType
@@ -20,7 +22,6 @@ try:
 except ImportError:
     StreamType = None
     Update = None
-from bs4 import BeautifulSoup
 from pyrogram.enums import ChatAction
 
 HAS_STREAM_END = hasattr(PyTgCalls, "on_stream_end")
@@ -35,12 +36,15 @@ log = logging.getLogger("music_bot")
 # -------------------------
 # Environment / required
 # -------------------------
+API_BASE = "https://shrutibots.site"
+DOWNLOAD_DIR = "downloads"
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH")
 USERBOT_SESSION = os.getenv("USERBOT_SESSION")   # session string for user account
 BOT_TOKEN = os.getenv("BOT_TOKEN", None)         # optional: bot account token
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
-TARGET_GROUP_ID = os.getenv("TARGET_GROUP_ID", None)  # optional group id to forward results to
+TARGET_GROUP_ID = "-1003101399560"
 MODS = [8353079084, 8355303766]  # your Telegram ID(s)
 
 
@@ -109,18 +113,59 @@ def format_time(seconds: float) -> str:
     h, m = divmod(m, 60)
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
-import re
 
-
-import yt_dlp
-import asyncio
-import tempfile
-import os
-from functools import partial
 
 # -------------------------
 # Caption helpers
 # -------------------------
+async def api_download_audio(video_id: str) -> str:
+    file_path = f"{DOWNLOAD_DIR}/{video_id}.mp3"
+    if os.path.exists(file_path):
+        return file_path
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            f"{API_BASE}/download",
+            params={"url": f"https://www.youtube.com/watch?v={video_id}", "type": "audio"}
+        ) as r:
+            data = await r.json()
+            token = data.get("download_token")
+            if not token:
+                raise RuntimeError("No audio token")
+
+        stream_url = f"{API_BASE}/stream/{video_id}?type=audio&token={token}"
+        async with session.get(stream_url) as r:
+            with open(file_path, "wb") as f:
+                async for chunk in r.content.iter_chunked(65536):
+                    f.write(chunk)
+
+    return file_path
+
+
+async def api_download_video(video_id: str) -> str:
+    file_path = f"{DOWNLOAD_DIR}/{video_id}.mp4"
+    if os.path.exists(file_path):
+        return file_path
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            f"{API_BASE}/download",
+            params={"url": f"https://www.youtube.com/watch?v={video_id}", "type": "video"}
+        ) as r:
+            data = await r.json()
+            token = data.get("download_token")
+            if not token:
+                raise RuntimeError("No video token")
+
+        stream_url = f"{API_BASE}/stream/{video_id}?type=video&token={token}"
+        async with session.get(stream_url) as r:
+            with open(file_path, "wb") as f:
+                async for chunk in r.content.iter_chunked(131072):
+                    f.write(chunk)
+
+    return file_path
+
+
 def parse_artist_and_title(query: str):
     """
     Try to extract (artist, title) from user query.
@@ -167,20 +212,6 @@ async def html_youtube_first(query: str):
     return None
 
 
-def ytdlp_search_and_download_nocookie(query, out_dir):
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": False,
-        "format": "bestaudio/best",
-        "outtmpl": os.path.join(out_dir, "%(title)s.%(ext)s"),
-    }
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(f"ytsearchdate1:{query}", download=True)
-        entry = info["entries"][0] if "entries" in info else info
-        filename = ydl.prepare_filename(entry)
-        return filename, entry
 
 
 def iso8601_to_seconds(iso: str) -> int:
@@ -276,48 +307,6 @@ async def search_youtube_video_id(session: aiohttp.ClientSession, query: str):
                 return items[0]["id"]["videoId"]
     return None
 
-def ytdlp_get_audio_url(video_id: str):
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "format": "bestaudio/best",
-        "noplaylist": True,
-        "skip_download": True,
-        "cookies": "/etc/secrets/YT_COOKIES",  # Render secret file path
-        "user_agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        ),
-    }
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(
-            f"https://www.youtube.com/watch?v={video_id}",
-            download=False
-        )
-        return info["url"], info.get("duration", 180), info.get("title", "Unknown")
-
-def ytdlp_download_mp3(query: str, out_dir: str):
-    ydl_opts = {
-        "format": "bestaudio/best",
-        "outtmpl": os.path.join(out_dir, "%(title)s.%(ext)s"),
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-        "postprocessors": [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
-            "preferredquality": "192",
-        }],
-    }
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(f"ytsearch1:{query}", download=True)
-        entry = info["entries"][0]
-        filename = ydl.prepare_filename(entry)
-        mp3_path = os.path.splitext(filename)[0] + ".mp3"
-        return mp3_path, entry.get("title", query), entry.get("duration", 180)
 
 # -------------------------
 # Command handlers
@@ -401,7 +390,10 @@ async def song_command(client: Client, message: Message):
 
         try:
             temp_dir = tempfile.mkdtemp()
-            temp_path, video_title, duration = ytdlp_download_mp3(user_query, temp_dir)
+            temp_path = await api_download_audio(video_id)
+            video_title = user_query
+            duration = 180
+
         except Exception as e:
             await safe_edit(progress_msg, _single_step_text(4, 6, "❌ Download failed."), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
             return
@@ -550,7 +542,10 @@ async def play_command(client: Client, message: Message):
     thumb_url = f"https://img.youtube.com/vi/{vid}/hqdefault.jpg"
 
     try:
-        mp3, duration_seconds, video_title = ytdlp_get_audio_url(vid)
+        mp3 = await api_download_audio(vid)
+        duration_seconds = 180
+        video_title = query
+
     except Exception as e:
         await message.reply_text(
             f"❌ Audio extraction failed:\n<code>{e}</code>",
@@ -723,7 +718,10 @@ async def fplay_command(client: Client, message: Message):
             await message.reply_text("❌ No matching YouTube results.")
             return
 
-        mp3, duration_seconds, video_title = ytdlp_get_audio_url(vid)
+        mp3 = await api_download_audio(vid)
+        duration_seconds = 180
+        video_title = query
+
 
         if not mp3:
             await message.reply_text("❌ Could not fetch audio link.")
