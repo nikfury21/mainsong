@@ -78,6 +78,40 @@ chat_locks = {}
 vc_active = set()        # chats where bot is in VC
 timers = {}              # chat_id -> auto_next asyncio.Task
 
+
+async def get_youtube_details(video_id: str):
+    """Return (title, duration_seconds, thumbnail_url)"""
+    if not YOUTUBE_API_KEY:
+        return None, 0, f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+
+    url = "https://www.googleapis.com/youtube/v3/videos"
+    params = {
+        "part": "snippet,contentDetails",
+        "id": video_id,
+        "key": YOUTUBE_API_KEY
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, params=params) as r:
+            if r.status != 200:
+                return None, 0, f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+
+            data = await r.json()
+            items = data.get("items", [])
+            if not items:
+                return None, 0, f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+
+            snippet = items[0]["snippet"]
+            duration = iso8601_to_seconds(items[0]["contentDetails"]["duration"])
+
+            return (
+                snippet.get("title"),
+                duration,
+                snippet["thumbnails"]["high"]["url"]
+            )
+
+
+
 async def cleanup_chat(chat_id: int):
     vc_active.discard(chat_id)
     current_song.pop(chat_id, None)
@@ -563,8 +597,12 @@ async def play_command(client: Client, message: Message):
 
     try:
         mp3 = await api_download_audio(vid)
-        duration_seconds = 180
-        video_title = query
+        video_title, duration_seconds, thumb_url = await get_youtube_details(vid)
+
+        # fallback safety
+        video_title = video_title or query
+        duration_seconds = duration_seconds or 180
+
 
     except Exception as e:
         await message.reply_text(
@@ -744,8 +782,12 @@ async def fplay_command(client: Client, message: Message):
             return
 
         mp3 = await api_download_audio(vid)
-        duration_seconds = 180
-        video_title = query
+        video_title, duration_seconds, thumb_url = await get_youtube_details(vid)
+
+        # fallback safety
+        video_title = video_title or query
+        duration_seconds = duration_seconds or 180
+
 
 
         if not mp3:
@@ -753,8 +795,12 @@ async def fplay_command(client: Client, message: Message):
             return
 
         # get title/duration best-effort
-        video_title = query
-        duration_seconds = 0
+        video_title, duration_seconds, thumb_url = await get_youtube_details(vid)
+
+        # fallback safety
+        video_title = video_title or query
+        duration_seconds = duration_seconds or 180
+
         try:
             yt_api_url = (
                 f"https://www.googleapis.com/youtube/v3/videos"
@@ -807,6 +853,47 @@ async def fplay_command(client: Client, message: Message):
 
         except Exception as e:
             await message.reply_text(f"❌ Could not force-play: {e}")
+
+@handler_client.on_message(filters.command("video"))
+async def video_command(client: Client, message: Message):
+    query = " ".join(message.command[1:]).strip()
+    if not query:
+        return await message.reply_text("❌ Usage: /video <search query>")
+
+    msg = await message.reply_text("🔎 Searching YouTube...")
+
+    vid = await html_youtube_first(query)
+    if not vid:
+        return await msg.edit_text("❌ No video found.")
+
+    title, duration, thumb_url = await get_youtube_details(vid)
+
+    if duration > 3600:
+        return await msg.edit_text(
+            f"❌ Video is too long.\n\n"
+            f"📏 Duration: {format_time(duration)}\n"
+            f"⚠️ Maximum allowed: 1 hour"
+        )
+
+    try:
+        await msg.edit_text("⬇️ Downloading video...")
+
+        video_path = await api_download_video(vid)
+
+        await client.send_video(
+            chat_id=message.chat.id,
+            video=video_path,
+            caption=f"🎬 <b>{title}</b>\n⏱ {format_time(duration)}",
+            thumb=thumb_url,
+            parse_mode=ParseMode.HTML,
+            supports_streaming=True
+        )
+
+        os.remove(video_path)
+
+    except Exception as e:
+        await msg.edit_text(f"❌ Failed to send video:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
+
 
 
 @handler_client.on_message(filters.command("resetvc"))
