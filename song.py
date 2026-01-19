@@ -811,48 +811,37 @@ async def reboot_command(client: Client, message: Message):
     if user_id not in MODS:
         return await message.reply_text("❌ You are not authorized to reboot the bot.")
 
-    await message.reply_text("♻️ Rebooting music service: clearing queues and restarting voice clients...")
+    await message.reply_text(
+        "♻️ Rebooting music service: clearing queues and restarting voice clients..."
+    )
 
     async def _do_reboot():
-        # clear queues
+        # ✅ clear queues and states
         music_queue.clear()
         current_song.clear()
-        # stop any running streams and leave calls
-        try:
-            # try to iterate call_py.calls safely
-            calls_dict = getattr(call_py, "calls", {}) or {}
-            # if calls_dict looks like a dict-like
-            try:
-                chat_ids = list(calls_dict.keys())
-            except:
-                chat_ids = []
-            for cid in chat_ids:
-                try:
-                    if hasattr(call_py, "stop_stream"):
-                        await call_py.stop_stream(cid)
-                    elif hasattr(call_py, "leave_call"):
-                        await call_py.leave_call(cid)
-                except:
-                    pass
-        except:
-            pass
+        vc_active.clear()
 
-        # try full stop then start
+        # ✅ safely leave all active VCs (NO call_py.calls)
+        for chat_id in list(vc_active):
+            try:
+                await call_py.leave_call(chat_id)
+            except:
+                pass
+
+        # ✅ full restart
         try:
             await _shutdown()
             await asyncio.sleep(1)
             await _startup()
+            await message.reply_text("✅ Reboot complete.")
         except Exception as e:
             try:
-                await message.reply_text(f"⚠️ Reboot attempted but error occurred: {e}")
+                await message.reply_text(
+                    f"⚠️ Reboot attempted but error occurred:\n<code>{e}</code>",
+                    parse_mode=ParseMode.HTML,
+                )
             except:
                 pass
-            return
-
-        try:
-            await message.reply_text("✅ Reboot complete.")
-        except:
-            pass
 
     asyncio.create_task(_do_reboot())
 
