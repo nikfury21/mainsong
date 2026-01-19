@@ -74,7 +74,7 @@ handler_client = bot if bot else userbot
 current_song = {}
 music_queue = {}
 chat_locks = {}
-
+vc_session = {}  # chat_id -> unique session id
 vc_active = set()        # chats where bot is in VC
 timers = {}              # chat_id -> auto_next asyncio.Task
 
@@ -129,6 +129,7 @@ async def get_youtube_details(video_id: str):
 
 
 async def cleanup_chat(chat_id: int):
+    vc_session[chat_id] = vc_session.get(chat_id, 0) + 1
     vc_active.discard(chat_id)
     current_song.pop(chat_id, None)
     music_queue.pop(chat_id, None)
@@ -570,6 +571,9 @@ async def play_replied_audio(client, message):
 
     try:
         file_path = await replied.download()
+        vc_session[chat_id] = vc_session.get(chat_id, 0) + 1
+        session_id = vc_session[chat_id]
+
 
         await call_py.play(
             chat_id,
@@ -695,6 +699,9 @@ async def play_command(client: Client, message: Message):
                 pass
 
             # start stream
+            vc_session[chat_id] = vc_session.get(chat_id, 0) + 1
+            session_id = vc_session[chat_id]
+
             await call_py.play(
                 chat_id,
                 MediaStream(
@@ -703,6 +710,7 @@ async def play_command(client: Client, message: Message):
                 )
             )
             vc_active.add(chat_id)
+
 
 
             current_song[chat_id] = {
@@ -739,8 +747,11 @@ async def play_command(client: Client, message: Message):
             )
 
             asyncio.create_task(update_progress_message(chat_id, msg, time.time(), duration_seconds or 180, caption))
-            task = asyncio.create_task(auto_next_timer(chat_id, duration_seconds or 180))
+            task = asyncio.create_task(
+                auto_next_timer(chat_id, duration_seconds or 180, session_id)
+            )
             timers[chat_id] = task
+
 
 
         except Exception as e:
@@ -871,6 +882,9 @@ async def fplay_command(client: Client, message: Message):
 
         # start forced song
         try:
+            vc_session[chat_id] = vc_session.get(chat_id, 0) + 1
+            session_id = vc_session[chat_id]
+
             await call_py.play(chat_id, MediaStream(mp3, video_flags=MediaStream.Flags.IGNORE))
             current_song[chat_id] = {
                 "title": video_title,
@@ -883,8 +897,11 @@ async def fplay_command(client: Client, message: Message):
             await message.reply_text(f"⏯️ Forced play: <b>{video_title}</b>", parse_mode=ParseMode.HTML)
 
             # start auto-next timer
-            task = asyncio.create_task(auto_next_timer(chat_id, duration_seconds or 180))
+            task = asyncio.create_task(
+                auto_next_timer(chat_id, duration_seconds or 180, session_id)
+            )
             timers[chat_id] = task
+
 
         except Exception as e:
             await message.reply_text(f"❌ Could not force-play: {e}")
@@ -966,6 +983,7 @@ async def reset_vc(client: Client, message: Message):
         return
 
     chat_id = message.chat.id
+    vc_session[chat_id] = vc_session.get(chat_id, 0) + 1
     await cleanup_chat(chat_id)
 
     await message.reply_text(
@@ -978,20 +996,21 @@ async def reset_vc(client: Client, message: Message):
 
 
 # --- Event bindings (timer-based fallback for PyTgCalls builds without stream_end) ---
-async def auto_next_timer(chat_id: int, duration: int):
+async def auto_next_timer(chat_id: int, duration: int, session_id: int):
     try:
         await asyncio.sleep(duration)
 
-        # VC already ended → FULL RESET
+        # ❌ OLD VC TIMER → IGNORE
+        if vc_session.get(chat_id) != session_id:
+            return
+
         if chat_id not in vc_active:
-            await cleanup_chat(chat_id)
             return
 
         await handle_next(chat_id)
 
     except asyncio.CancelledError:
         return
-
 
 
 # When playing a song, we’ll start this timer
