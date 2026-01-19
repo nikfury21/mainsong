@@ -71,9 +71,27 @@ handler_client = bot if bot else userbot
 # ======================================
 # CORRECT QUEUE MODEL
 # ======================================
-current_song = {}      # chat_id -> dict (NOW PLAYING)
-music_queue = {}       # chat_id -> list of next songs
-chat_locks = {}   # chat_id -> asyncio.Lock()
+current_song = {}
+music_queue = {}
+chat_locks = {}
+
+vc_active = set()        # chats where bot is in VC
+timers = {}              # chat_id -> auto_next asyncio.Task
+
+async def cleanup_chat(chat_id: int):
+    vc_active.discard(chat_id)
+    current_song.pop(chat_id, None)
+    music_queue.pop(chat_id, None)
+
+    task = timers.pop(chat_id, None)
+    if task:
+        task.cancel()
+
+    try:
+        await call_py.leave_call(chat_id)
+    except:
+        pass
+
 
 def get_chat_lock(chat_id: int) -> asyncio.Lock:
     """Return a per-chat asyncio.Lock (create if missing)."""
@@ -491,6 +509,8 @@ async def play_replied_audio(client, message):
                 video_flags=MediaStream.Flags.IGNORE
             )
         )
+        vc_active.add(chat_id)
+
 
 
 
@@ -563,7 +583,8 @@ async def play_command(client: Client, message: Message):
     lock = get_chat_lock(chat_id)
     async with lock:
         # if something is already playing -> add to queue
-        if chat_id in current_song:
+        if chat_id in current_song and chat_id in vc_active:
+
             pos = add_to_queue(chat_id, {
                 "title": video_title,
                 "url": mp3,
@@ -604,6 +625,8 @@ async def play_command(client: Client, message: Message):
                     video_flags=MediaStream.Flags.IGNORE
                 )
             )
+            vc_active.add(chat_id)
+
 
             current_song[chat_id] = {
                 "title": video_title,
@@ -639,7 +662,9 @@ async def play_command(client: Client, message: Message):
             )
 
             asyncio.create_task(update_progress_message(chat_id, msg, time.time(), duration_seconds or 180, caption))
-            asyncio.create_task(auto_next_timer(chat_id, duration_seconds or 180))
+            task = asyncio.create_task(auto_next_timer(chat_id, duration_seconds or 180))
+            timers[chat_id] = task
+
 
         except Exception as e:
             await message.reply_text(f"❌ Voice playback error:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
@@ -653,12 +678,8 @@ async def handle_next(chat_id):
     async with lock:
         # no songs in queue
         if chat_id not in music_queue or not music_queue[chat_id]:
-            current_song.pop(chat_id, None)
-            music_queue.pop(chat_id, None)
-            try:
-                await call_py.leave_call(chat_id)
-            except:
-                pass
+            await cleanup_chat(chat_id)
+
             try:
                 await bot.send_message(chat_id, "✅ Queue finished and cleared.", parse_mode=ParseMode.HTML)
             except:
@@ -777,7 +798,9 @@ async def fplay_command(client: Client, message: Message):
             await message.reply_text(f"⏯️ Forced play: <b>{video_title}</b>", parse_mode=ParseMode.HTML)
 
             # start auto-next timer
-            asyncio.create_task(auto_next_timer(chat_id, duration_seconds or 180))
+            task = asyncio.create_task(auto_next_timer(chat_id, duration_seconds or 180))
+            timers[chat_id] = task
+
         except Exception as e:
             await message.reply_text(f"❌ Could not force-play: {e}")
 
@@ -837,9 +860,13 @@ async def reboot_command(client: Client, message: Message):
 
 # --- Event bindings (timer-based fallback for PyTgCalls builds without stream_end) ---
 async def auto_next_timer(chat_id: int, duration: int):
-    """Fallback timer to trigger next song after duration."""
-    await asyncio.sleep(duration)
-    await handle_next(chat_id)
+    try:
+        await asyncio.sleep(duration)
+        if chat_id not in vc_active:
+            return
+        await handle_next(chat_id)
+    except asyncio.CancelledError:
+        return
 
 
 # When playing a song, we’ll start this timer
@@ -872,7 +899,9 @@ async def mresume_command(client, message: Message):
 
 @handler_client.on_message(filters.command("skip"))
 async def skip_command(client, message: Message):
-    user = await client.get_chat_member(message.chat.id, message.from_user.id)
+    chat_id = message.chat.id   # ✅ FIX: define chat_id
+
+    user = await client.get_chat_member(chat_id, message.from_user.id)
     if not (user.privileges or user.status in ("administrator", "creator")):
         await message.reply_text(
             "❌ <b>You need to be an admin to use this command.</b>",
@@ -880,9 +909,12 @@ async def skip_command(client, message: Message):
         )
         return
 
-    chat_id = message.chat.id
+    # ✅ FIX: VC state check
+    if chat_id not in vc_active:
+        return await message.reply_text("❌ Bot is not in a voice chat.")
+
     try:
-        # Stop current stream safely
+        # ✅ Stop current stream safely
         if hasattr(call_py, "stop_stream"):
             await call_py.stop_stream(chat_id)
         elif hasattr(call_py, "leave_call"):
@@ -890,11 +922,13 @@ async def skip_command(client, message: Message):
         else:
             await call_py.stop(chat_id)
 
-        await message.reply_text("⏭ <b>Skipped current song.</b>", parse_mode=ParseMode.HTML)
+        await message.reply_text(
+            "⏭ <b>Skipped current song.</b>",
+            parse_mode=ParseMode.HTML,
+        )
 
-        # ✅ Immediately play the next song in queue
+        # ✅ Play next song in queue
         await handle_next(chat_id)
-
 
     except Exception as e:
         await message.reply_text(
@@ -1040,13 +1074,10 @@ try:
     @call_py.on_stream_end()
     async def on_stream_end_handler(_, update):
         chat_id = update.chat_id
-        if chat_id in music_queue:
-            music_queue.pop(chat_id, None)
-        try:
-            await call_py.leave_call(chat_id)
-        except Exception:
-            pass
-        await bot.send_message(chat_id, "✅ Voice chat ended — queue cleared.", parse_mode=ParseMode.HTML)
+        if chat_id not in vc_active:
+            return
+        await handle_next(chat_id)
+
 except Exception:
     log.warning("PyTgCalls version may not support on_stream_end, using timer fallback.")
 
