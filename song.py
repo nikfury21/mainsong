@@ -661,7 +661,12 @@ async def play_command(client: Client, message: Message):
     if chat_id in current_song and chat_id not in vc_active:
         await cleanup_chat(chat_id)
 
+    task = timers.pop(chat_id, None)
+    if task:
+        task.cancel()
+
     lock = get_chat_lock(chat_id)
+
     async with lock:
         # if something is already playing -> add to queue
         if chat_id in current_song and chat_id in vc_active:
@@ -796,14 +801,41 @@ async def handle_next(chat_id):
                 "</blockquote>"
             )
 
+            bar = get_progress_bar(0, next_song.get("duration", 180))
+
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
-                 InlineKeyboardButton("▶ Resume", callback_data="resume"),
-                 InlineKeyboardButton("⏭ Skip", callback_data="skip")]
+                InlineKeyboardButton("▶ Resume", callback_data="resume"),
+                InlineKeyboardButton("⏭ Skip", callback_data="skip")],
+                [InlineKeyboardButton(bar, callback_data="progress")]
             ])
 
-            msg = await bot.send_photo(chat_id, thumb, caption=caption, reply_markup=kb)
-            asyncio.create_task(auto_next_timer(chat_id, next_song.get("duration", 180)))
+            msg = await bot.send_photo(
+                chat_id,
+                thumb,
+                caption=caption,
+                reply_markup=kb,
+                parse_mode=ParseMode.HTML
+            )
+
+            asyncio.create_task(
+                update_progress_message(
+                    chat_id,
+                    msg,
+                    time.time(),
+                    next_song.get("duration", 180),
+                    caption
+                )
+            )
+
+            vc_session[chat_id] = vc_session.get(chat_id, 0) + 1
+            session_id = vc_session[chat_id]
+
+            task = asyncio.create_task(
+                auto_next_timer(chat_id, next_song.get("duration", 180), session_id)
+            )
+            timers[chat_id] = task
+
 
         except Exception as e:
             try:
@@ -1057,9 +1089,13 @@ async def skip_command(client, message: Message):
     if chat_id not in vc_active:
         return await message.reply_text("❌ Bot is not in a voice chat.")
 
+    task = timers.pop(chat_id, None)
+    if task:
+        task.cancel()
+
     try:
-        # ✅ Stop current stream safely
         if hasattr(call_py, "stop_stream"):
+
             await call_py.stop_stream(chat_id)
         elif hasattr(call_py, "leave_call"):
             await call_py.leave_call(chat_id)
