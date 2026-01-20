@@ -206,15 +206,37 @@ async def translate_lyrics_cb(_, query):
         return await query.answer("❌ Original lyrics not found. Click the Lyrics button first.", show_alert=True)
 
     # indicate work started
-    await query.answer("Translating (Gemini)…")
+    await query.answer("Translating…")
 
     # build prompt (preserve line breaks, ask for natural English)
-    prompt = f"""Translate the following Hindi song lyrics into natural, easy-to-read English.
-Preserve line breaks. Do NOT add commentary or explanations. Return only the translation.
+    prompt = f"""
+Convert the following Hindi song lyrics into Hinglish.
 
-Lyrics:
+Rules:
+- Keep the language Hindi.
+- ONLY change the script from Devanagari to English letters.
+- Do NOT translate meanings into English.
+- Do NOT rewrite creatively.
+- Preserve line breaks exactly.
+- Use natural, commonly spoken Hinglish.
+- Avoid incorrect phonetics like: maim, mem, batem.
+- Use forms like: main, mein, baatein, hoon, kyun, nahi.
+
+Example:
+
+Hindi:
+हाँ, करता मैं बातें मेरी आईने से देखो तेरी
+तुझसे कैसे खुल के वैसे बोलूँ मैं ये राज़ दिल के?
+
+Correct Hinglish:
+haan, karta main baatein meri aaine se dekho teri
+tujhse kaise khul ke waise bolun main ye raaz dil ke?
+
+Now convert this:
+
 {lyrics}
 """
+
 
     try:
         # call Gemini model (2.5-flash)
