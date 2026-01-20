@@ -749,10 +749,14 @@ async def update_progress_message(chat_id, msg, start_time, total_dur, caption):
             break
         bar = get_progress_bar(elapsed, total_dur)
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
-             InlineKeyboardButton("▶ Resume", callback_data="resume")],
-            [InlineKeyboardButton(bar, callback_data="progress")]
+            [
+                InlineKeyboardButton("⏸ Pause", callback_data="pause"),
+                InlineKeyboardButton("▶ Resume", callback_data="resume")
+            ],
+            [InlineKeyboardButton(bar, callback_data="progress")],
+            lyrics_button(current_song[chat_id]["title"]).inline_keyboard[0]
         ])
+
         try:
             await msg.edit_caption(caption, reply_markup=kb, parse_mode=ParseMode.HTML)
         except Exception:
