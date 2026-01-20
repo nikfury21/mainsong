@@ -422,16 +422,35 @@ async def add_to_playlist(client, message):
     else:
         text = message.text.split(None, 2)[-1]
 
-    songs = [s.strip() for s in text.split("\n") if s.strip()]
-
-    if not songs:
+    queries = [q.strip() for q in text.split("\n") if q.strip()]
+    if not queries:
         return await message.reply_text("❌ No songs detected.")
 
-    user_pl[name].extend(songs)
+    added = 0
+
+    for query in queries:
+        try:
+            vid = await html_youtube_first(query)
+            if not vid:
+                continue
+
+            title, _, _ = await get_youtube_details(vid)
+            title = title or query
+
+            user_pl[name].append({
+                "title": title,
+                "query": query,
+                "vid": vid
+            })
+            added += 1
+
+        except Exception:
+            continue
+
     save_playlists()
 
     await message.reply_text(
-        f"✅ Added **{len(songs)}** song(s) to **{name}**"
+        f"✅ Added **{added}** song(s) to **{name}**"
     )
 
 
@@ -450,7 +469,8 @@ async def show_playlist(client, message):
 
     text = f"🎵 **Playlist: {name}**\n\n"
     for i, song in enumerate(user_pl[name], start=1):
-        text += f"{i}. {song}\n"
+        text += f"{i}. {song['title']}\n"
+
 
     await message.reply_text(text)
 
@@ -490,47 +510,45 @@ async def delete_playlist_or_song(client, message):
 
 
 
-@handler_client.on_message(filters.command("play"))
-async def play_playlist_or_song(client: Client, message: Message):
+@handler_client.on_message(filters.command("pplay"))
+async def play_playlist(client: Client, message: Message):
     args = message.command[1:]
     if not args:
-        return await message.reply_text("❌ Usage: /play <song | playlist>")
+        return await message.reply_text("❌ Usage: /pplay <playlist> [random|index]")
 
     user_id = message.from_user.id
     user_pl = get_user_playlists(user_id)
 
     name = normalize_name(args[0])
 
-    # ---------- PLAYLIST MODE ----------
-    if name in user_pl:
-        songs = user_pl[name].copy()
+    if name not in user_pl:
+        return await message.reply_text("❌ Playlist not found.")
 
-        if not songs:
-            return await message.reply_text("⚠️ Playlist is empty.")
+    songs = user_pl[name].copy()
+    if not songs:
+        return await message.reply_text("⚠️ Playlist is empty.")
 
-        # /play name random
-        if len(args) > 1 and args[1] == "random":
-            import random
-            random.shuffle(songs)
+    # /pplay name random
+    if len(args) > 1 and args[1] == "random":
+        import random
+        random.shuffle(songs)
 
-        # /play name 7
-        elif len(args) > 1 and args[1].isdigit():
-            idx = int(args[1])
-            if not (1 <= idx <= len(songs)):
-                return await message.reply_text("❌ Invalid index.")
-            songs = [songs[idx - 1]]
+    # /pplay name 3
+    elif len(args) > 1 and args[1].isdigit():
+        idx = int(args[1])
+        if not (1 <= idx <= len(songs)):
+            return await message.reply_text("❌ Invalid index.")
+        songs = [songs[idx - 1]]
 
-        # enqueue songs
-        for s in songs:
-            fake = message.copy()
-            fake.text = f"/play {s}"
-            await play_command(client, fake)
+    for song in songs:
+        fake = message
+        fake.text = f"/play {song['query']}"
+        fake.command = ["play", song["query"]]
+        await play_command(client, fake)
 
-        await message.reply_text(f"▶️ Playing playlist **{name}**")
-        return
 
-    # ---------- NORMAL SONG ----------
-    await play_command(client, message)
+
+    await message.reply_text(f"▶️ Playing playlist **{name}**")
 
 
 def get_progress_bar(elapsed: float, total: float, bar_len: int = 14) -> str:
