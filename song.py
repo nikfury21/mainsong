@@ -23,6 +23,7 @@ except ImportError:
     StreamType = None
     Update = None
 from pyrogram.enums import ChatAction
+import requests
 
 HAS_STREAM_END = hasattr(PyTgCalls, "on_stream_end")
 HAS_AUDIO_FINISHED = hasattr(PyTgCalls, "on_audio_finished")
@@ -80,36 +81,110 @@ from pathlib import Path
 
 PLAYLIST_FILE = Path("playlists.json")
 
-# ======================
-# PLAYLIST STORAGE (JSON)
-# ======================
+# single source of truth for playlists
+USER_PLAYLISTS = {}
+# keep legacy name `playlists` as an alias so older code continues to work
+playlists = USER_PLAYLISTS
 
-playlists = {}  # { user_id(str): { playlist_name: [songs] } }
 
 BACKUP_CHAT_ID = 8353079084  # 🔴 YOUR Telegram ID
 PLAYLIST_BACKUP_FILE = "playlists_backup.json"
 
+
+
+def fetch_lyrics(query: str) -> str | None:
+    try:
+        url = "https://lrclib.net/api/search"
+        params = {"q": query}
+        r = requests.get(url, params=params, timeout=10)
+
+        if r.status_code != 200:
+            return None
+
+        data = r.json()
+        if not data:
+            return None
+
+        # Prefer synced lyrics, fallback to plain
+        for item in data:
+            if item.get("plainLyrics"):
+                return item["plainLyrics"]
+
+        return None
+
+    except Exception:
+        return None
+
+def normalize_lyrics_query(q: str) -> str:
+    q = q.lower().strip()
+
+    # "song by artist" → "artist - song"
+    if " by " in q:
+        song, artist = q.split(" by ", 1)
+        q = f"{artist.strip()} - {song.strip()}"
+
+    # remove junk words
+    q = re.sub(r"\b(official|audio|video|lyrics|mv|remastered)\b", "", q)
+    q = re.sub(r"[^\w\s\-]", "", q)
+    q = re.sub(r"\s+", " ", q)
+
+    return q.strip()
+
+def lyrics_button(title: str):
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("📜 Lyrics", callback_data=f"lyrics|{title}")]]
+    )
+
+
+@handler_client.on_callback_query(filters.regex("^lyrics\\|"))
+async def lyrics_callback(_, query):
+    title = query.data.split("|", 1)[1]
+
+    fixed = normalize_lyrics_query(title)
+    lyrics = await asyncio.to_thread(fetch_lyrics, fixed)
+
+    if not lyrics:
+        return await query.message.reply_text("❌ Lyrics not available.")
+
+    # Telegram limit safety
+    for part in [lyrics[i:i+4000] for i in range(0, len(lyrics), 4000)]:
+        await query.message.reply_text(part)
+
+
 def load_playlists():
-    global playlists
+    global USER_PLAYLISTS, playlists
     if PLAYLIST_FILE.exists():
         try:
             with open(PLAYLIST_FILE, "r", encoding="utf-8") as f:
-                playlists = json.load(f)
+                data = json.load(f)
+                if isinstance(data, dict):
+                    # preserve same object references and update contents
+                    USER_PLAYLISTS.clear()
+                    USER_PLAYLISTS.update(data)
+                    playlists.clear()
+                    playlists.update(data)
+                else:
+                    USER_PLAYLISTS.clear()
+                    playlists.clear()
         except Exception:
-            playlists = {}
+            USER_PLAYLISTS.clear()
+            playlists.clear()
     else:
-        playlists = {}
+        USER_PLAYLISTS.clear()
+        playlists.clear()
+
 
 
 def save_playlists():
     with open(PLAYLIST_FILE, "w", encoding="utf-8") as f:
-        json.dump(playlists, f, indent=2, ensure_ascii=False)
+        json.dump(USER_PLAYLISTS, f, indent=2, ensure_ascii=False)
+
 
 
 def get_user_playlists(user_id: int):
-    uid = str(user_id)  # JSON keys must be string
-    playlists.setdefault(uid, {})
-    return playlists[uid]
+    uid = str(user_id)
+    USER_PLAYLISTS.setdefault(uid, {})
+    return USER_PLAYLISTS[uid]
 
 
 def normalize_name(name: str) -> str:
@@ -176,7 +251,8 @@ import json
 
 def dump_playlists_to_file(path=PLAYLIST_BACKUP_FILE):
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(playlists, f, indent=2, ensure_ascii=False)
+        json.dump(USER_PLAYLISTS, f, indent=2, ensure_ascii=False)
+
 
 
 async def cleanup_chat(chat_id: int):
@@ -195,8 +271,7 @@ async def cleanup_chat(chat_id: int):
         pass
 
 
-def get_user_playlists(user_id: int):
-    return playlists.setdefault(user_id, {})
+
 
 
 def normalize_name(name: str) -> str:
@@ -753,8 +828,10 @@ async def song_command(client: Client, message: Message):
                 thumb=thumb_path if thumb_path else None,
                 caption=caption,
                 parse_mode=ParseMode.HTML,
-                file_name=f"{title}.mp3"
+                file_name=f"{title}.mp3",
+                reply_markup=lyrics_button(title)
             )
+
 
 
 
@@ -834,8 +911,10 @@ async def play_replied_audio(client, message):
 
     await message.reply_text(
         f"{caption}\n\n<b>🎧 Streaming replied audio</b>",
-        parse_mode=ParseMode.HTML
+        parse_mode=ParseMode.HTML,
+        reply_markup=lyrics_button(title)
     )
+
 
 
 
@@ -964,9 +1043,10 @@ async def play_command(client: Client, message: Message):
             bar = get_progress_bar(0, duration_seconds or 180)
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
-                 InlineKeyboardButton("▶ Resume", callback_data="resume"),
-                 InlineKeyboardButton("⏭ Skip", callback_data="skip")],
-                [InlineKeyboardButton(bar, callback_data="progress")]
+                InlineKeyboardButton("▶ Resume", callback_data="resume"),
+                InlineKeyboardButton("⏭ Skip", callback_data="skip")],
+                [InlineKeyboardButton(bar, callback_data="progress")],
+                [InlineKeyboardButton("📜 Lyrics", callback_data=f"lyrics|{video_title}")]
             ])
 
             msg = await message.reply_photo(
@@ -975,6 +1055,7 @@ async def play_command(client: Client, message: Message):
                 reply_markup=kb,
                 parse_mode=ParseMode.HTML
             )
+
 
             asyncio.create_task(update_progress_message(chat_id, msg, time.time(), duration_seconds or 180, caption))
             task = asyncio.create_task(
@@ -1032,7 +1113,8 @@ async def handle_next(chat_id):
                 [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
                 InlineKeyboardButton("▶ Resume", callback_data="resume"),
                 InlineKeyboardButton("⏭ Skip", callback_data="skip")],
-                [InlineKeyboardButton(bar, callback_data="progress")]
+                [InlineKeyboardButton(bar, callback_data="progress")],
+                [InlineKeyboardButton("📜 Lyrics", callback_data=f"lyrics|{next_song['title']}")]
             ])
 
             msg = await bot.send_photo(
@@ -1042,6 +1124,7 @@ async def handle_next(chat_id):
                 reply_markup=kb,
                 parse_mode=ParseMode.HTML
             )
+
 
             asyncio.create_task(
                 update_progress_message(
@@ -1591,10 +1674,14 @@ async def reload_playlists(client, message):
             data = json.load(f)
 
         if not isinstance(data, dict):
-            raise ValueError("Invalid structure")
+            raise ValueError("Invalid playlist structure")
 
-        global playlists
-        playlists = data
+        # update single source of truth in-place
+        global USER_PLAYLISTS, playlists
+        USER_PLAYLISTS.clear()
+        USER_PLAYLISTS.update(data)
+        playlists.clear()
+        playlists.update(data)
 
         await message.reply_text("✅ Playlists reloaded successfully.")
 
@@ -1606,6 +1693,7 @@ async def reload_playlists(client, message):
             os.remove(path)
         except:
             pass
+
 
 @handler_client.on_message(filters.command("backup"))
 async def manual_backup(client, message):
