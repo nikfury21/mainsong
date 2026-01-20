@@ -9,7 +9,7 @@ flask
 Flask-RESTful
 requests
 aiofiles
-
+indic-transliteration
 # telegram crypto + client
 tgcrypto==1.2.5
 pyrogram==1.4.16   # 👈 rollback to the compatible version
