@@ -199,27 +199,14 @@ async def lyrics_callback(_, query):
     lyrics = transliterate_if_hindi(lyrics)
 
     # split while preserving paragraphs and line breaks
-    parts = []
-    for para in lyrics.split("\n\n"):
-        para = para.strip()
-        if not para:
-            # preserve blank paragraph as an invisible line to keep spacing
-            parts.append("\u200b")
-            continue
+    # send in ONE message if possible
+    if len(lyrics) <= 4000:
+        await query.message.reply_text(lyrics)
+    else:
+        # split only if too long for Telegram
+        for i in range(0, len(lyrics), 4000):
+            await query.message.reply_text(lyrics[i:i+4000])
 
-        # break large paragraphs into <=4000 sized chunks
-        while len(para) > 4000:
-            cut = para.rfind("\n", 0, 4000)
-            if cut <= 0:
-                cut = 4000
-            parts.append(para[:cut].strip())
-            para = para[cut:].strip()
-        if para:
-            parts.append(para)
-
-    # send parts
-    for part in parts:
-        await query.message.reply_text(part)
 
 
 def load_playlists():
