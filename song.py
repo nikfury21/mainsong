@@ -28,7 +28,7 @@ from pyrogram.enums import ChatAction
 import requests
 
 import google.generativeai as genai
-GEMINI_API_KEY = "AIzaSyAUnh-YBebQukHiJ-emR6fIheZCRnSLHC4"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 genai.configure(api_key=GEMINI_API_KEY)
 gemini = genai.GenerativeModel("gemini-2.5-flash")
 
