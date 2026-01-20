@@ -24,6 +24,9 @@ except ImportError:
     Update = None
 from pyrogram.enums import ChatAction
 import requests
+# add these near other imports
+from indic_transliteration import sanscript
+from indic_transliteration.sanscript import transliterate
 
 HAS_STREAM_END = hasattr(PyTgCalls, "on_stream_end")
 HAS_AUDIO_FINISHED = hasattr(PyTgCalls, "on_audio_finished")
@@ -117,21 +120,92 @@ def fetch_lyrics(query: str) -> str | None:
 
     except Exception:
         return None
+    
+
+
+def transliterate_if_hindi(text: str) -> str:
+    """
+    If text contains Devanagari characters → transliterate to roman form,
+    lower-case it, remove dots (artifact from ITRANS), keep linebreaks,
+    and normalize spaces but preserve paragraphs.
+    """
+    if not text:
+        return text
+
+    # detect Devanagari block
+    if re.search(r"[\u0900-\u097F]", text):
+        # transliterate and lowercase
+        text = transliterate(text, sanscript.DEVANAGARI, sanscript.ITRANS).lower()
+
+        # remove periods/dots introduced by transliteration like "a.n" -> "an"
+        text = text.replace(".", "")
+
+        # collapse spaces/tabs but keep newlines
+        text = re.sub(r"[ \t]+", " ", text)
+
+        # normalize multiple blank lines to maximum two
+        text = re.sub(r"\n\s*\n+", "\n\n", text)
+
+        # trim spaces at start/end of each line
+        lines = [ln.strip() for ln in text.splitlines()]
+        text = "\n".join(lines).strip()
+
+        return text
+
+    # not Devanagari — just return original (no change), but lowercase for consistency
+    return text.lower() if isinstance(text, str) else text
+
+
+
 
 def normalize_lyrics_query(q: str) -> str:
-    q = q.lower().strip()
+    """
+    Strong normalization tailored for noisy YouTube titles.
+    Produces strings like "artist - title" or "title" for lyric search.
+    """
+    q = (q or "").lower().strip()
 
-    # "song by artist" → "artist - song"
+    # 1) Cut junk after pipe (YouTube metadata) — use first segment
+    if "|" in q:
+        q = q.split("|")[0]
+
+    # 2) Remove bracketed extras like (Official Video), [Lyrical], etc.
+    q = re.sub(r"\(.*?\)", "", q)
+    q = re.sub(r"\[.*?\]", "", q)
+
+    # 3) If " by " is explicit -> convert "title by artist" to "artist - title"
     if " by " in q:
-        song, artist = q.split(" by ", 1)
-        q = f"{artist.strip()} - {song.strip()}"
+        parts = q.rsplit(" by ", 1)
+        if len(parts) == 2:
+            title_part, artist_part = parts
+            q = f"{artist_part.strip()} - {title_part.strip()}"
 
-    # remove junk words
-    q = re.sub(r"\b(official|audio|video|lyrics|mv|remastered)\b", "", q)
-    q = re.sub(r"[^\w\s\-]", "", q)
+    # 4) If title contains " - " try to prefer "artist - title" pattern
+    #    Normalize to "artist - title" if left looks like artist (contains space or alphabetic)
+    if " - " in q:
+        left, right = q.split(" - ", 1)
+        # heuristics: if left is short (1-3 words) treat left as artist
+        # otherwise if right is shorter, swap
+        if len(left.split()) <= 4:
+            # assume "Artist - Title" is already okay
+            pass
+        else:
+            # keep as-is (some titles are "Song - Movie")
+            pass
+
+    # 5) Remove common useless keywords
+    q = re.sub(
+        r"\b(official|officially|lyrical|lyric|lyrics|audio|video|full song|hd|4k|movie|soundtrack|feat|ft)\b",
+        "",
+        q
+    )
+
+    # 6) strip punctuation except dash (dash helps "artist - title")
+    q = re.sub(r"[^\w\s\-]", " ", q)
     q = re.sub(r"\s+", " ", q)
 
     return q.strip()
+
 
 def lyrics_button(title: str):
     key = uuid.uuid4().hex[:8]  # short & Telegram-safe
@@ -147,18 +221,52 @@ def lyrics_button(title: str):
 async def lyrics_callback(_, query):
     key = query.data.split("|", 1)[1]
 
+    # get original YouTube title from short cache
     title = LYRICS_CACHE.get(key)
     if not title:
         return await query.answer("❌ Lyrics expired.", show_alert=True)
 
+    # normalize query for lyric source
     fixed = normalize_lyrics_query(title)
-    lyrics = await asyncio.to_thread(fetch_lyrics, fixed)
+
+    # try cached lyrics by fixed query first
+    cached = LYRICS_CACHE.get(f"lyrics_{fixed}")
+    if cached:
+        lyrics = cached
+    else:
+        lyrics = await asyncio.to_thread(fetch_lyrics, fixed)
+        if lyrics:
+            # cache fetched lyrics for a short time / keyed by normalized query
+            LYRICS_CACHE[f"lyrics_{fixed}"] = lyrics
 
     if not lyrics:
         return await query.message.reply_text("❌ Lyrics not available.")
 
-    for part in [lyrics[i:i+4000] for i in range(0, len(lyrics), 4000)]:
-        await query.message.reply_text(part)
+    # transliterate if necessary and clean formatting
+    lyrics = transliterate_if_hindi(lyrics)
+
+    # split long lyrics into 4000-char Telegram-safe chunks, preserving linebreaks
+    parts = []
+    # split by paragraphs first to keep structure
+    for para in lyrics.split("\n\n"):
+        if not para.strip():
+            parts.append("")  # preserve empty paragraph
+            continue
+        # break large paragraphs into chunks of <=4000 while preserving line breaks inside chunk
+        while len(para) > 4000:
+            cut = para.rfind("\n", 0, 4000)
+            if cut <= 0:
+                cut = 4000
+            parts.append(para[:cut].strip())
+            para = para[cut:].strip()
+        if para:
+            parts.append(para.strip())
+
+    for part in parts:
+        if part == "":
+            await query.message.reply_text("")  # preserve blank line
+        else:
+            await query.message.reply_text(part)
 
 
 def load_playlists():
