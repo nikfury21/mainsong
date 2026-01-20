@@ -90,6 +90,9 @@ playlists = USER_PLAYLISTS
 BACKUP_CHAT_ID = 8353079084  # 🔴 YOUR Telegram ID
 PLAYLIST_BACKUP_FILE = "playlists_backup.json"
 
+import uuid
+
+LYRICS_CACHE = {}
 
 
 def fetch_lyrics(query: str) -> str | None:
@@ -131,14 +134,22 @@ def normalize_lyrics_query(q: str) -> str:
     return q.strip()
 
 def lyrics_button(title: str):
+    key = uuid.uuid4().hex[:8]  # short & Telegram-safe
+    LYRICS_CACHE[key] = title  # store ORIGINAL YouTube title
+
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("📜 Lyrics", callback_data=f"lyrics|{title}")]]
+        [[InlineKeyboardButton("📜 Lyrics", callback_data=f"lyrics|{key}")]]
     )
+
 
 
 @handler_client.on_callback_query(filters.regex("^lyrics\\|"))
 async def lyrics_callback(_, query):
-    title = query.data.split("|", 1)[1]
+    key = query.data.split("|", 1)[1]
+
+    title = LYRICS_CACHE.get(key)
+    if not title:
+        return await query.answer("❌ Lyrics expired.", show_alert=True)
 
     fixed = normalize_lyrics_query(title)
     lyrics = await asyncio.to_thread(fetch_lyrics, fixed)
@@ -146,7 +157,6 @@ async def lyrics_callback(_, query):
     if not lyrics:
         return await query.message.reply_text("❌ Lyrics not available.")
 
-    # Telegram limit safety
     for part in [lyrics[i:i+4000] for i in range(0, len(lyrics), 4000)]:
         await query.message.reply_text(part)
 
