@@ -71,6 +71,51 @@ handler_client = bot if bot else userbot
 # ======================================
 # CORRECT QUEUE MODEL
 # ======================================
+# ======================
+# PLAYLIST SYSTEM
+# ======================
+# playlists[user_id][playlist_name] = [ "song query", "song query", ... ]
+import json
+from pathlib import Path
+
+PLAYLIST_FILE = Path("playlists.json")
+
+# ======================
+# PLAYLIST STORAGE (JSON)
+# ======================
+
+playlists = {}  # { user_id(str): { playlist_name: [songs] } }
+
+BACKUP_CHAT_ID = 8353079084  # 🔴 YOUR Telegram ID
+PLAYLIST_BACKUP_FILE = "playlists_backup.json"
+
+def load_playlists():
+    global playlists
+    if PLAYLIST_FILE.exists():
+        try:
+            with open(PLAYLIST_FILE, "r", encoding="utf-8") as f:
+                playlists = json.load(f)
+        except Exception:
+            playlists = {}
+    else:
+        playlists = {}
+
+
+def save_playlists():
+    with open(PLAYLIST_FILE, "w", encoding="utf-8") as f:
+        json.dump(playlists, f, indent=2, ensure_ascii=False)
+
+
+def get_user_playlists(user_id: int):
+    uid = str(user_id)  # JSON keys must be string
+    playlists.setdefault(uid, {})
+    return playlists[uid]
+
+
+def normalize_name(name: str) -> str:
+    return name.strip().lower()
+
+
 current_song = {}
 music_queue = {}
 chat_locks = {}
@@ -127,6 +172,12 @@ async def get_youtube_details(video_id: str):
             )
 
 
+import json
+
+def dump_playlists_to_file(path=PLAYLIST_BACKUP_FILE):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(playlists, f, indent=2, ensure_ascii=False)
+
 
 async def cleanup_chat(chat_id: int):
     vc_session[chat_id] = vc_session.get(chat_id, 0) + 1
@@ -142,6 +193,14 @@ async def cleanup_chat(chat_id: int):
         await call_py.leave_call(chat_id)
     except:
         pass
+
+
+def get_user_playlists(user_id: int):
+    return playlists.setdefault(user_id, {})
+
+
+def normalize_name(name: str) -> str:
+    return name.strip().lower()
 
 
 def get_chat_lock(chat_id: int) -> asyncio.Lock:
@@ -324,6 +383,154 @@ async def download_with_progress(session, url, progress_msg):
                     pass
 
         return b"".join(chunks)
+
+
+@handler_client.on_message(filters.command("addplaylist"))
+async def add_playlist(client, message):
+    if len(message.command) < 2:
+        return await message.reply_text("❌ Usage: /addplaylist <name>")
+
+    user_id = message.from_user.id
+    name = normalize_name(" ".join(message.command[1:]))
+
+    user_pl = get_user_playlists(user_id)
+
+    if name in user_pl:
+        return await message.reply_text("⚠️ Playlist already exists.")
+
+    user_pl[name] = []
+    save_playlists()
+
+    await message.reply_text(f"✅ Playlist **{name}** created.")
+
+
+
+@handler_client.on_message(filters.command("add"))
+async def add_to_playlist(client, message):
+    if len(message.command) < 2:
+        return await message.reply_text("❌ Usage: /add <playlist_name>")
+
+    user_id = message.from_user.id
+    name = normalize_name(message.command[1])
+    user_pl = get_user_playlists(user_id)
+
+    if name not in user_pl:
+        return await message.reply_text("❌ Playlist not found.")
+
+    if message.reply_to_message and message.reply_to_message.text:
+        text = message.reply_to_message.text
+    else:
+        text = message.text.split(None, 2)[-1]
+
+    songs = [s.strip() for s in text.split("\n") if s.strip()]
+
+    if not songs:
+        return await message.reply_text("❌ No songs detected.")
+
+    user_pl[name].extend(songs)
+    save_playlists()
+
+    await message.reply_text(
+        f"✅ Added **{len(songs)}** song(s) to **{name}**"
+    )
+
+
+
+@handler_client.on_message(filters.command("playlist"))
+async def show_playlist(client, message):
+    if len(message.command) < 2:
+        return await message.reply_text("❌ Usage: /playlist <name>")
+
+    user_id = message.from_user.id
+    name = normalize_name(message.command[1])
+    user_pl = get_user_playlists(user_id)
+
+    if name not in user_pl or not user_pl[name]:
+        return await message.reply_text("⚠️ Playlist empty or not found.")
+
+    text = f"🎵 **Playlist: {name}**\n\n"
+    for i, song in enumerate(user_pl[name], start=1):
+        text += f"{i}. {song}\n"
+
+    await message.reply_text(text)
+
+
+@handler_client.on_message(filters.command("dlt"))
+async def delete_playlist_or_song(client, message):
+    if len(message.command) < 2:
+        return await message.reply_text("❌ Usage: /dlt <name> [indexes]")
+
+    user_id = message.from_user.id
+    args = message.command[1:]
+    name = normalize_name(args[0])
+    user_pl = get_user_playlists(user_id)
+
+    if name not in user_pl:
+        return await message.reply_text("❌ Playlist not found.")
+
+    # delete whole playlist
+    if len(args) == 1:
+        del user_pl[name]
+        save_playlists()
+        return await message.reply_text(f"🗑 Deleted playlist **{name}**")
+
+    indexes = sorted({int(i) for i in args[1:] if i.isdigit()}, reverse=True)
+    pl = user_pl[name]
+
+    removed = 0
+    for idx in indexes:
+        if 1 <= idx <= len(pl):
+            pl.pop(idx - 1)
+            removed += 1
+
+    save_playlists()
+    await message.reply_text(
+        f"🗑 Removed **{removed}** song(s) from **{name}**"
+    )
+
+
+
+@handler_client.on_message(filters.command("play"))
+async def play_playlist_or_song(client: Client, message: Message):
+    args = message.command[1:]
+    if not args:
+        return await message.reply_text("❌ Usage: /play <song | playlist>")
+
+    user_id = message.from_user.id
+    user_pl = get_user_playlists(user_id)
+
+    name = normalize_name(args[0])
+
+    # ---------- PLAYLIST MODE ----------
+    if name in user_pl:
+        songs = user_pl[name].copy()
+
+        if not songs:
+            return await message.reply_text("⚠️ Playlist is empty.")
+
+        # /play name random
+        if len(args) > 1 and args[1] == "random":
+            import random
+            random.shuffle(songs)
+
+        # /play name 7
+        elif len(args) > 1 and args[1].isdigit():
+            idx = int(args[1])
+            if not (1 <= idx <= len(songs)):
+                return await message.reply_text("❌ Invalid index.")
+            songs = [songs[idx - 1]]
+
+        # enqueue songs
+        for s in songs:
+            fake = message.copy()
+            fake.text = f"/play {s}"
+            await play_command(client, fake)
+
+        await message.reply_text(f"▶️ Playing playlist **{name}**")
+        return
+
+    # ---------- NORMAL SONG ----------
+    await play_command(client, message)
 
 
 def get_progress_bar(elapsed: float, total: float, bar_len: int = 14) -> str:
@@ -1345,116 +1552,164 @@ async def callback_handler(client, cq: CallbackQuery):
         await cq.answer()
 
 
+@handler_client.on_message(filters.command("reload"))
+async def reload_playlists(client, message):
+    if message.from_user.id not in MODS:
+        return
 
+    if not message.reply_to_message or not message.reply_to_message.document:
+        return await message.reply_text(
+            "❌ Reply to playlists JSON file."
+        )
 
+    doc = message.reply_to_message.document
+    if not doc.file_name.endswith(".json"):
+        return await message.reply_text("❌ Invalid file type.")
 
-# -------------------------
-# Startup / shutdown helpers
-# -------------------------
-async def _startup():
-    """Start userbot (required for PyTgCalls), start PyTgCalls, then bot (optional)."""
-    log.info("Starting userbot client...")
-    await userbot.start()
-    log.info("Starting PyTgCalls client...")
-    await call_py.start()
-    if bot:
-        log.info("Starting bot client...")
-        await bot.start()
-    log.info("Startup complete.")
+    path = await message.reply_to_message.download()
 
-async def _shutdown():
-    log.info("Shutting down services...")
     try:
-        await call_py.stop()
-    except Exception:
-        pass
-    try:
-        await userbot.stop()
-    except Exception:
-        pass
-    if bot:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        if not isinstance(data, dict):
+            raise ValueError("Invalid structure")
+
+        global playlists
+        playlists = data
+
+        await message.reply_text("✅ Playlists reloaded successfully.")
+
+    except Exception as e:
+        await message.reply_text(f"❌ Reload failed:\n<code>{e}</code>")
+
+    finally:
         try:
-            await bot.stop()
-        except Exception:
+            os.remove(path)
+        except:
             pass
-    log.info("Shutdown finished.")
 
-async def main_loop():
-    await _startup()
-    # keep running until interrupted
-    await idle()
-    # idle exits on stop, then perform shutdown
-    await _shutdown()
+@handler_client.on_message(filters.command("backup"))
+async def manual_backup(client, message):
+    if message.from_user.id not in MODS:
+        return
+
+    dump_playlists_to_file()
+
+    await client.send_document(
+        message.chat.id,
+        PLAYLIST_BACKUP_FILE,
+        caption="📦 Manual playlist backup"
+    )
+
 
 # ================================
 #   Docker / Render-safe startup
+#   + Telegram playlist backup
 # ================================
 import threading
 import asyncio
 import signal
 import traceback
 
+
 def start_flask():
     """Run Flask keepalive webserver in background thread."""
     threading.Thread(target=run_flask, daemon=True).start()
     log.info("🌐 Flask webserver started in background thread.")
 
+
 async def start_services():
-    """Start Pyrogram userbot + bot + PyTgCalls safely, and keep idle loop."""
+    """Start Pyrogram userbot + bot + PyTgCalls safely, keep idle loop,
+    and auto-backup playlists on shutdown.
+    """
+    # 🔹 Load playlists on startup
+    try:
+        load_playlists()
+        log.info("📂 Playlists loaded into memory.")
+    except Exception as e:
+        log.error(f"Failed to load playlists: {e}")
+
     try:
         log.info("🚀 Initializing clients...")
+
         await userbot.start()
         log.info("[Userbot] connected.")
+
         await call_py.start()
         log.info("[PyTgCalls] ready.")
+
         if bot:
             await bot.start()
             log.info("[Bot] started.")
 
-        # Background idle
         log.info("✅ All clients started. Entering idle mode...")
         await idle()
 
     except Exception as e:
-        log.error("❌ Startup error: %s", e)
+        log.error("❌ Runtime error: %s", e)
         traceback.print_exc()
+
     finally:
-        log.info("🔻 Shutting down...")
+        log.info("🔻 Shutdown initiated, backing up playlists...")
+
+        # 🔹 AUTO BACKUP PLAYLISTS TO DM
+        try:
+            dump_playlists_to_file()
+
+            sender = bot if bot else userbot
+            await sender.send_document(
+                BACKUP_CHAT_ID,
+                PLAYLIST_BACKUP_FILE,
+                caption="📦 Playlist auto-backup before shutdown"
+            )
+
+            log.info("📦 Playlist backup sent successfully.")
+
+        except Exception as e:
+            log.error(f"Playlist backup failed: {e}")
+
+        # 🔹 STOP SERVICES CLEANLY
         try:
             await call_py.stop()
         except Exception:
             pass
+
         try:
             await userbot.stop()
         except Exception:
             pass
+
         if bot:
             try:
                 await bot.stop()
             except Exception:
                 pass
+
         log.info("🟢 Clean shutdown complete.")
 
 
 def main():
     """Entry point for Docker / Render deployment."""
     start_flask()  # non-blocking webserver thread
-    loop = asyncio.get_event_loop()
 
-    # handle shutdown signals gracefully
+    loop = asyncio.get_event_loop()
     stop_event = asyncio.Event()
 
     def stop_handler(*_):
         loop.call_soon_threadsafe(stop_event.set)
 
-
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop_handler)
+        try:
+            loop.add_signal_handler(sig, stop_handler)
+        except NotImplementedError:
+            pass
 
-    # run startup + main service
     loop.create_task(start_services())
     loop.run_until_complete(stop_event.wait())
-    log.info("🛑 Received shutdown signal, exiting...")
+
+    log.info("🛑 Process terminated.")
+
 
 if __name__ == "__main__":
     main()
