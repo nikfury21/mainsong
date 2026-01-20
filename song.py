@@ -15,8 +15,7 @@ from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream
 import re
 from functools import partial
-from indic_transliteration import sanscript
-from indic_transliteration.sanscript import transliterate
+
 
 # --- Compatibility handling for PyTgCalls versions ---
 try:
@@ -27,6 +26,12 @@ except ImportError:
     Update = None
 from pyrogram.enums import ChatAction
 import requests
+
+import google.generativeai as genai
+GEMINI_API_KEY = "AIzaSyAUnh-YBebQukHiJ-emR6fIheZCRnSLHC4"
+genai.configure(api_key=GEMINI_API_KEY)
+gemini = genai.GenerativeModel("gemini-2.5-flash")
+
 
 HAS_STREAM_END = hasattr(PyTgCalls, "on_stream_end")
 HAS_AUDIO_FINISHED = hasattr(PyTgCalls, "on_audio_finished")
@@ -121,37 +126,11 @@ def fetch_lyrics(query: str) -> str | None:
     except Exception:
         return None
 
+def is_hindi(text: str) -> bool:
+    """Return True if text contains Devanagari characters (basic Hindi detection)."""
+    return bool(re.search(r"[\u0900-\u097F]", text)) if text else False
 
-def transliterate_if_hindi(text: str) -> str:
-    """
-    If text contains Devanagari → transliterate to roman form,
-    lowercase, remove dot artifacts, preserve newlines and paragraphs.
-    """
-    if not text:
-        return text
 
-    # detect Devanagari (Hindi)
-    if re.search(r"[\u0900-\u097F]", text):
-        # transliterate and lowercase
-        text = transliterate(text, sanscript.DEVANAGARI, sanscript.ITRANS).lower()
-
-        # remove dot artifacts introduced by ITRANS like "a.n" -> "an"
-        text = text.replace(".", "")
-
-        # collapse spaces/tabs but KEEP newlines
-        text = re.sub(r"[ \t]+", " ", text)
-
-        # normalize multiple blank lines to a maximum of two
-        text = re.sub(r"\n\s*\n+", "\n\n", text)
-
-        # trim spaces at start/end of each line
-        lines = [ln.strip() for ln in text.splitlines()]
-        text = "\n".join(lines).strip()
-
-        return text
-
-    # non-Devanagari -> return lowercase for consistency
-    return text.lower()
 
 
 
@@ -188,24 +167,71 @@ async def lyrics_callback(_, query):
     if not title:
         return await query.answer("❌ Lyrics expired.", show_alert=True)
 
-    # keep existing query flow (no changes to normalization or fetching)
+    # Normalize & fetch lyrics (same as before)
     fixed = normalize_lyrics_query(title)
     lyrics = await asyncio.to_thread(fetch_lyrics, fixed)
 
     if not lyrics:
         return await query.message.reply_text("❌ Lyrics not available.")
 
-    # transliterate if needed (keeps newlines, removes dots, lowercases)
-    lyrics = transliterate_if_hindi(lyrics)
+    # cache the original lyrics for possible translation later
+    LYRICS_CACHE[f"lyrics_{key}"] = lyrics
 
-    # split while preserving paragraphs and line breaks
-    # send in ONE message if possible
+    # if lyrics are Hindi (Devanagari) -> show Translate button
+    buttons = None
+    if is_hindi(lyrics):
+        buttons = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🌐 Translate to English", callback_data=f"translate|{key}")]]
+        )
+
+    # send original lyrics (no transliteration/translation here)
     if len(lyrics) <= 4000:
-        await query.message.reply_text(lyrics)
+        await query.message.reply_text(lyrics, reply_markup=buttons)
     else:
-        # split only if too long for Telegram
-        for i in range(0, len(lyrics), 4000):
+        # if long, send first chunk with buttons, then the rest
+        await query.message.reply_text(lyrics[:4000], reply_markup=buttons)
+        for i in range(4000, len(lyrics), 4000):
             await query.message.reply_text(lyrics[i:i+4000])
+
+
+
+
+@handler_client.on_callback_query(filters.regex("^translate\\|"))
+async def translate_lyrics_cb(_, query):
+    key = query.data.split("|", 1)[1]
+    lyrics = LYRICS_CACHE.get(f"lyrics_{key}")
+
+    # if not cached, ask user to press the lyrics button first
+    if not lyrics:
+        return await query.answer("❌ Original lyrics not found. Click the Lyrics button first.", show_alert=True)
+
+    # indicate work started
+    await query.answer("Translating (Gemini)…")
+
+    # build prompt (preserve line breaks, ask for natural English)
+    prompt = f"""Translate the following Hindi song lyrics into natural, easy-to-read English.
+Preserve line breaks. Do NOT add commentary or explanations. Return only the translation.
+
+Lyrics:
+{lyrics}
+"""
+
+    try:
+        # call Gemini model (2.5-flash)
+        resp = gemini.generate_content(prompt)
+        translated = resp.text.strip()
+
+    except Exception as e:
+        await query.message.reply_text(f"❌ Translation failed: {e}")
+        return
+
+    # send translated text (split safely)
+    if len(translated) <= 4000:
+        await query.message.reply_text(translated)
+    else:
+        for i in range(0, len(translated), 4000):
+            await query.message.reply_text(translated[i:i+4000])
+
 
 
 
