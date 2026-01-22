@@ -876,7 +876,7 @@ async def song_command(client: Client, message: Message):
 
     user_query = " ".join(message.command[1:])
     if not user_query:
-        return await message.reply_text(bi("Ooh god why humand are so dumb, let an code to teach you the correct usage:\n/song (name)"), parse_mode=ParseMode.HTML)
+        return await message.reply_text(bi("Ooh god why humans are so dumb, let an code to teach you the correct usage:\n/song (name)"), parse_mode=ParseMode.HTML)
 
         return
 
@@ -1085,12 +1085,12 @@ async def play_command(client: Client, message: Message):
             bi("Hey you, yes you, eat almonds, you forgot to give a song name after /play, kid."),
             parse_mode=ParseMode.HTML
         )
-        try:
-            await message.reply_sticker("CAACAgQAAxUAAWkPQRUy37GVR42R2w26sKQx4FKBAAKrGQACQwl4UJ1u2xb-mMqINgQ")
-        except:
-            pass
         return
 
+    try:
+        await message.reply_sticker("CAACAgQAAxUAAWkPQRUy37GVR42R2w26sKQx4FKBAAKrGQACQwl4UJ1u2xb-mMqINgQ")
+    except:
+        pass
 
     vid = await html_youtube_first(query)
     if not vid:
@@ -1234,10 +1234,7 @@ async def play_command(client: Client, message: Message):
 async def vplay_command(client: Client, message: Message):
     query = " ".join(message.command[1:]).strip()
     if not query:
-        await message.reply_text(
-            bi("Hey you, yes you, eat almonds, you forgot to give a video name after /vplay, kid."),
-            parse_mode=ParseMode.HTML
-        )
+        return await message.reply_text(bi("Hey you, yes you, eat almonds, you forgot to give a video name after /vplay, kid."), parse_mode=ParseMode.HTML)
 
     vid = await html_youtube_first(query)
     if not vid:
@@ -1292,13 +1289,12 @@ async def vplay_command(client: Client, message: Message):
         # Start video playback
         vc_session[chat_id] = vc_session.get(chat_id, 0) + 1
         session_id = vc_session[chat_id]
-        await asyncio.sleep(1)
 
-
-        ok = await safe_vplay(chat_id, MediaStream(video_path))
-        if not ok:
-            return await message.reply_text(bi("Wait wait wait dont break me, video is already starting"), parse_mode=ParseMode.HTML)
-
+        await call_py.play(
+            chat_id,
+            MediaStream(video_path)  # ✅ VIDEO STREAM
+        )
+        vc_active.add(chat_id)
 
         current_song[chat_id] = {
             "title": title,
@@ -1345,6 +1341,7 @@ async def vplay_command(client: Client, message: Message):
         timers[chat_id] = asyncio.create_task(
             auto_next_timer(chat_id, duration, session_id)
         )
+
 
 
 
