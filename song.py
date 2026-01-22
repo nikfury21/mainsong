@@ -103,6 +103,12 @@ import uuid
 
 LYRICS_CACHE = {}
 
+
+def bi(text: str) -> str:
+    return f"<b><i>{text}</i></b>"
+
+
+
 def safe_lyrics_button(title: str):
     key = uuid.uuid4().hex[:8]   # always < 64 bytes
     LYRICS_CACHE[key] = title
@@ -179,7 +185,7 @@ async def lyrics_callback(_, query):
     lyrics = await asyncio.to_thread(fetch_lyrics, fixed)
 
     if not lyrics:
-        return await query.message.reply_text("❌ Lyrics not available.")
+        return await query.message.reply_text(bi("Nawh, im not capable to find lyrics of this one, sorry dude"), parse_mode=ParseMode.HTML)
 
     # cache the original lyrics for possible translation later
     LYRICS_CACHE[f"lyrics_{key}"] = lyrics
@@ -251,7 +257,11 @@ Now convert this:
         translated = resp.text.strip()
 
     except Exception as e:
-        await query.message.reply_text(f"❌ Translation failed: {e}")
+        await query.message.reply_text(
+            f"<b><i>My owner is too lazy, he ignored this probable error: {e}</i></b>",
+            parse_mode=ParseMode.HTML
+        )
+
         return
 
     # send translated text (split safely)
@@ -576,7 +586,8 @@ async def download_with_progress(session, url, progress_msg):
 @handler_client.on_message(filters.command("addplaylist"))
 async def add_playlist(client, message):
     if len(message.command) < 2:
-        return await message.reply_text("❌ Usage: /addplaylist <name>")
+        return await message.reply_text(bi("Nah not like this qt, lemme show how its done\n/addplaylist (name)"), parse_mode=ParseMode.HTML)
+
 
     user_id = message.from_user.id
     name = normalize_name(" ".join(message.command[1:]))
@@ -584,26 +595,30 @@ async def add_playlist(client, message):
     user_pl = get_user_playlists(user_id)
 
     if name in user_pl:
-        return await message.reply_text("⚠️ Playlist already exists.")
+        return await message.reply_text(bi("The good/bad thing is that you already made a playlist named same as this"), parse_mode=ParseMode.HTML)
 
     user_pl[name] = []
     save_playlists()
 
-    await message.reply_text(f"✅ Playlist **{name}** created.")
+    await message.reply_text(
+        bi(f"Okay sir, ready to vibe now {name} created."),
+        parse_mode=ParseMode.HTML
+    )
+
 
 
 
 @handler_client.on_message(filters.command("add"))
 async def add_to_playlist(client, message):
     if len(message.command) < 2:
-        return await message.reply_text("❌ Usage: /add <playlist_name>")
+        return await message.reply_text(bi("Not again, lemme show you how its done\n/add (playlist name)"), parse_mode=ParseMode.HTML)
 
     user_id = message.from_user.id
     name = normalize_name(message.command[1])
     user_pl = get_user_playlists(user_id)
 
     if name not in user_pl:
-        return await message.reply_text("❌ Playlist not found.")
+        return await message.reply_text(bi("I guess you have a typo mistake here or you forgot to make a playlist with this name as it doesnt exist"), parse_mode=ParseMode.HTML)
 
     if message.reply_to_message and message.reply_to_message.text:
         text = message.reply_to_message.text
@@ -612,7 +627,7 @@ async def add_to_playlist(client, message):
 
     queries = [q.strip() for q in text.split("\n") if q.strip()]
     if not queries:
-        return await message.reply_text("❌ No songs detected.")
+        return await message.reply_text(bi("Aah i cant see any song here to add either im dora the explorer or you are drunk"), parse_mode=ParseMode.HTML)
 
     added = 0
 
@@ -638,22 +653,24 @@ async def add_to_playlist(client, message):
     save_playlists()
 
     await message.reply_text(
-        f"✅ Added **{added}** song(s) to **{name}**"
+        bi(f"Yah yeah! added {added} song(s) to {name}"),
+        parse_mode=ParseMode.HTML
     )
+
 
 
 
 @handler_client.on_message(filters.command("playlist"))
 async def show_playlist(client, message):
     if len(message.command) < 2:
-        return await message.reply_text("❌ Usage: /playlist <name>")
+        return await message.reply_text(bi("Nah dude not again like this, lemme show how its done:\n/playlist(name)"), parse_mode=ParseMode.HTML)
 
     user_id = message.from_user.id
     name = normalize_name(message.command[1])
     user_pl = get_user_playlists(user_id)
 
     if name not in user_pl or not user_pl[name]:
-        return await message.reply_text("⚠️ Playlist empty or not found.")
+        return await message.reply_text(bi("Playlist is empty or not found just like your brain"), parse_mode=ParseMode.HTML)
 
     text = f"🎵 **Playlist: {name}**\n\n"
     for i, song in enumerate(user_pl[name], start=1):
@@ -666,7 +683,7 @@ async def show_playlist(client, message):
 @handler_client.on_message(filters.command("dlt"))
 async def delete_playlist_or_song(client, message):
     if len(message.command) < 2:
-        return await message.reply_text("❌ Usage: /dlt <name> [indexes]")
+        return await message.reply_text(bi("Uk you have to be precise to use me haha, usage:\n/dlt (playlist name) (index)"), parse_mode=ParseMode.HTML)
 
     user_id = message.from_user.id
     args = message.command[1:]
@@ -674,13 +691,17 @@ async def delete_playlist_or_song(client, message):
     user_pl = get_user_playlists(user_id)
 
     if name not in user_pl:
-        return await message.reply_text("❌ Playlist not found.")
+        return await message.reply_text(bi("I swear i check playlist with this name but doesnt found any with this name"), parse_mode=ParseMode.HTML)
 
     # delete whole playlist
     if len(args) == 1:
         del user_pl[name]
         save_playlists()
-        return await message.reply_text(f"🗑 Deleted playlist **{name}**")
+        return await message.reply_text(
+            bi(f"Ok your wish almighty, deleted {name}"),
+            parse_mode=ParseMode.HTML
+        )
+
 
     indexes = sorted({int(i) for i in args[1:] if i.isdigit()}, reverse=True)
     pl = user_pl[name]
@@ -693,8 +714,10 @@ async def delete_playlist_or_song(client, message):
 
     save_playlists()
     await message.reply_text(
-        f"🗑 Removed **{removed}** song(s) from **{name}**"
+        bi(f"Ok your wish almighty, deleted {removed} song(s) from {name}"),
+        parse_mode=ParseMode.HTML
     )
+
 
 
 
@@ -702,7 +725,7 @@ async def delete_playlist_or_song(client, message):
 async def play_playlist(client: Client, message: Message):
     args = message.command[1:]
     if not args:
-        return await message.reply_text("❌ Usage: /pplay <playlist> [random|index]")
+        return await message.reply_text(bi("Nah ik you are doing this like you doesnt know anything, usage-\n/pplay (playlist) <random/index>"), parse_mode=ParseMode.HTML)
 
     user_id = message.from_user.id
     user_pl = get_user_playlists(user_id)
@@ -710,11 +733,11 @@ async def play_playlist(client: Client, message: Message):
     name = normalize_name(args[0])
 
     if name not in user_pl:
-        return await message.reply_text("❌ Playlist not found.")
+        return await message.reply_text(bi("I swear i check playlist with this name but doesnt found any with this name"), parse_mode=ParseMode.HTML)
 
     songs = user_pl[name].copy()
     if not songs:
-        return await message.reply_text("⚠️ Playlist is empty.")
+        return await message.reply_text(bi("Dude you doesnt have any song in this playlist, go and add"), parse_mode=ParseMode.HTML)
 
     # /pplay name random
     if len(args) > 1 and args[1] == "random":
@@ -725,7 +748,7 @@ async def play_playlist(client: Client, message: Message):
     elif len(args) > 1 and args[1].isdigit():
         idx = int(args[1])
         if not (1 <= idx <= len(songs)):
-            return await message.reply_text("❌ Invalid index.")
+            return await message.reply_text(bi("Dk but that index doesnt seems appropriate"), parse_mode=ParseMode.HTML)
         songs = [songs[idx - 1]]
 
     for song in songs:
@@ -736,7 +759,10 @@ async def play_playlist(client: Client, message: Message):
 
 
 
-    await message.reply_text(f"▶️ Playing playlist **{name}**")
+        await message.reply_text(
+            bi(f"Yuhuu playling playlist {name}"),
+            parse_mode=ParseMode.HTML
+        )
 
 
 def get_progress_bar(elapsed: float, total: float, bar_len: int = 14) -> str:
@@ -803,7 +829,7 @@ async def ping_userbot(_, message: Message):
     if user_id not in MODS:
         return
     # a simple check on userbot to ensure user account is running
-    await message.reply_text("userbot is online ✅")
+    return await message.reply_text(bi("Huh, im online since you born"), parse_mode=ParseMode.HTML)
 
 
 @handler_client.on_message(filters.command("song"))
@@ -836,7 +862,8 @@ async def song_command(client: Client, message: Message):
 
     user_query = " ".join(message.command[1:])
     if not user_query:
-        await message.reply_text("Please provide a song name after /song.")
+        return await message.reply_text(bi("Ooh god why humand are so dumb, let an code to teach you the correct usage:\n/song (name)"), parse_mode=ParseMode.HTML)
+
         return
 
     # create progress message
@@ -889,7 +916,7 @@ async def song_command(client: Client, message: Message):
                     progress_msg,
                     _single_step_text(
                         4, 6,
-                        f"❌ Song too long ({format_time(duration)}).\nMaximum allowed: 2 hours."
+                        bi(f"I will not fall in this trap again, the song's duration is ({format_time(duration)}).\nMaximum allowed: 2 hours.")
                     ),
                     ParseMode.HTML,
                     last_edit_time_holder=last_edit_ref
@@ -1039,9 +1066,11 @@ async def play_replied_audio(client, message):
 async def play_command(client: Client, message: Message):
     """/play <query> - same search/result as /song but robust to race conditions"""
     query = " ".join(message.command[1:]).strip()
-    if not query:
-        await message.reply_text("Please provide a song name after /play.")
-        return
+    await message.reply_text(
+        bi("Hey you, yes you, eat almonds, you forgot to give a song name after /song, kid."),
+        parse_mode=ParseMode.HTML
+    )
+
 
     try:
         await message.reply_sticker("CAACAgQAAxUAAWkPQRUy37GVR42R2w26sKQx4FKBAAKrGQACQwl4UJ1u2xb-mMqINgQ")
@@ -1190,7 +1219,10 @@ async def play_command(client: Client, message: Message):
 async def vplay_command(client: Client, message: Message):
     query = " ".join(message.command[1:]).strip()
     if not query:
-        return await message.reply_text("❌ Usage: /vplay <video name>")
+        await message.reply_text(
+            bi("Hey you, yes you, eat almonds, you forgot to give a video name after /vplay, kid."),
+            parse_mode=ParseMode.HTML
+        )
 
     vid = await html_youtube_first(query)
     if not vid:
@@ -1310,9 +1342,10 @@ async def handle_next(chat_id):
             try:
                 await bot.send_message(
                     chat_id,
-                    "✅ Queue finished and cleared.",
+                    bi("Please ignore this, i also dk how to remove this😭🙏🏿"),
                     parse_mode=ParseMode.HTML
                 )
+
             except:
                 pass
             return
@@ -1523,9 +1556,15 @@ async def fplay_command(client: Client, message: Message):
 async def video_command(client: Client, message: Message):
     query = " ".join(message.command[1:]).strip()
     if not query:
-        return await message.reply_text("❌ Usage: /video <search query>")
+        await message.reply_text(
+            bi("Hey you, yes you, eat almonds, you forgot to give a song name after /song, kid."),
+            parse_mode=ParseMode.HTML
+        )
 
-    msg = await message.reply_text("🔎 Searching YouTube...")
+
+    msg = await message.reply_text(bi("Lemme scroll youtube to find video so you dont have to"), parse_mode=ParseMode.HTML)
+
+
 
     vid = await html_youtube_first(query)
     if not vid:
@@ -1541,7 +1580,11 @@ async def video_command(client: Client, message: Message):
         )
 
     try:
-        await msg.edit_text("⬇️ Downloading video...")
+        await msg.edit_text(
+            bi("Lemme use my jutsu to download this video my almighty"),
+            parse_mode=ParseMode.HTML
+        )
+
 
         video_path = await api_download_video(vid)
 
