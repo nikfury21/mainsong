@@ -103,6 +103,12 @@ import uuid
 
 LYRICS_CACHE = {}
 
+def safe_lyrics_button(title: str):
+    key = uuid.uuid4().hex[:8]   # always < 64 bytes
+    LYRICS_CACHE[key] = title
+    return InlineKeyboardButton("📜 Lyrics", callback_data=f"lyrics|{key}")
+
+
 
 def fetch_lyrics(query: str) -> str | None:
     try:
@@ -1273,7 +1279,8 @@ async def vplay_command(client: Client, message: Message):
                 InlineKeyboardButton("⏭ Skip", callback_data="skip")
             ],
             [InlineKeyboardButton(bar, callback_data="progress")],
-            [InlineKeyboardButton("📜 Lyrics", callback_data=f"lyrics|{title}")]
+            [safe_lyrics_button(title)]
+
         ])
 
         msg = await message.reply_photo(
