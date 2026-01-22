@@ -102,6 +102,20 @@ PLAYLIST_BACKUP_FILE = "playlists_backup.json"
 import uuid
 
 LYRICS_CACHE = {}
+vc_connecting = set()
+
+
+async def safe_vplay(chat_id, stream):
+    if chat_id in vc_connecting:
+        return False
+
+    vc_connecting.add(chat_id)
+    try:
+        await call_py.play(chat_id, stream)
+        vc_active.add(chat_id)
+        return True
+    finally:
+        vc_connecting.discard(chat_id)
 
 
 def bi(text: str) -> str:
@@ -1066,16 +1080,17 @@ async def play_replied_audio(client, message):
 async def play_command(client: Client, message: Message):
     """/play <query> - same search/result as /song but robust to race conditions"""
     query = " ".join(message.command[1:]).strip()
-    await message.reply_text(
-        bi("Hey you, yes you, eat almonds, you forgot to give a song name after /song, kid."),
-        parse_mode=ParseMode.HTML
-    )
+    if not query:
+        await message.reply_text(
+            bi("Hey you, yes you, eat almonds, you forgot to give a song name after /play, kid."),
+            parse_mode=ParseMode.HTML
+        )
+        try:
+            await message.reply_sticker("CAACAgQAAxUAAWkPQRUy37GVR42R2w26sKQx4FKBAAKrGQACQwl4UJ1u2xb-mMqINgQ")
+        except:
+            pass
+        return
 
-
-    try:
-        await message.reply_sticker("CAACAgQAAxUAAWkPQRUy37GVR42R2w26sKQx4FKBAAKrGQACQwl4UJ1u2xb-mMqINgQ")
-    except:
-        pass
 
     vid = await html_youtube_first(query)
     if not vid:
@@ -1277,12 +1292,13 @@ async def vplay_command(client: Client, message: Message):
         # Start video playback
         vc_session[chat_id] = vc_session.get(chat_id, 0) + 1
         session_id = vc_session[chat_id]
+        await asyncio.sleep(1)
 
-        await call_py.play(
-            chat_id,
-            MediaStream(video_path)  # ✅ VIDEO STREAM
-        )
-        vc_active.add(chat_id)
+
+        ok = await safe_vplay(chat_id, MediaStream(video_path))
+        if not ok:
+            return await message.reply_text(bi("Wait wait wait dont break me, video is already starting"), parse_mode=ParseMode.HTML)
+
 
         current_song[chat_id] = {
             "title": title,
