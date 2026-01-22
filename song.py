@@ -1180,63 +1180,209 @@ async def play_command(client: Client, message: Message):
             await message.reply_text(f"❌ Voice playback error:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
 
 
+@handler_client.on_message(filters.command("vplay"))
+async def vplay_command(client: Client, message: Message):
+    query = " ".join(message.command[1:]).strip()
+    if not query:
+        return await message.reply_text("❌ Usage: /vplay <video name>")
+
+    vid = await html_youtube_first(query)
+    if not vid:
+        return await message.reply_text("❌ No matching YouTube results.")
+
+    chat_id = message.chat.id
+
+    try:
+        video_path = await api_download_video(vid)
+        title, duration, thumb_url = await get_youtube_details(vid)
+
+        title = title or query
+        duration = duration or 180
+
+    except Exception as e:
+        return await message.reply_text(
+            f"❌ Video fetch failed:\n<code>{e}</code>",
+            parse_mode=ParseMode.HTML
+        )
+
+    readable_duration = format_time(duration)
+
+    # 🔥 Fix ghost VC
+    if chat_id in current_song and chat_id not in vc_active:
+        await cleanup_chat(chat_id)
+
+    task = timers.pop(chat_id, None)
+    if task:
+        task.cancel()
+
+    lock = get_chat_lock(chat_id)
+
+    async with lock:
+        # If something already playing → queue video
+        if chat_id in current_song and chat_id in vc_active:
+            pos = add_to_queue(chat_id, {
+                "title": title,
+                "url": video_path,
+                "vid": vid,
+                "user": message.from_user,
+                "duration": duration,
+                "is_video": True
+            })
+
+            return await message.reply_text(
+                f"<b>➜ Added video to queue at</b> <u>#{pos}</u>\n\n"
+                f"<b>🎬 Title:</b> <i>{title}</i>\n"
+                f"<b>⏱ Duration:</b> <u>{readable_duration}</u>",
+                parse_mode=ParseMode.HTML
+            )
+
+        # Start video playback
+        vc_session[chat_id] = vc_session.get(chat_id, 0) + 1
+        session_id = vc_session[chat_id]
+
+        await call_py.play(
+            chat_id,
+            MediaStream(video_path)  # ✅ VIDEO STREAM
+        )
+        vc_active.add(chat_id)
+
+        current_song[chat_id] = {
+            "title": title,
+            "url": video_path,
+            "vid": vid,
+            "user": message.from_user,
+            "duration": duration,
+            "start_time": time.time(),
+            "is_video": True
+        }
+
+        caption = (
+            "<blockquote>"
+            "<b>🎬 <u>Streaming Video</u></b>\n\n"
+            f"<b>❍ Title:</b> <i>{title}</i>\n"
+            f"<b>❍ Requested by:</b> "
+            f"<a href='tg://user?id={message.from_user.id}'>{message.from_user.first_name}</a>"
+            "</blockquote>"
+        )
+
+        bar = get_progress_bar(0, duration)
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("⏸ Pause", callback_data="pause"),
+                InlineKeyboardButton("▶ Resume", callback_data="resume"),
+                InlineKeyboardButton("⏭ Skip", callback_data="skip")
+            ],
+            [InlineKeyboardButton(bar, callback_data="progress")],
+            [InlineKeyboardButton("📜 Lyrics", callback_data=f"lyrics|{title}")]
+        ])
+
+        msg = await message.reply_photo(
+            photo=thumb_url,
+            caption=caption,
+            reply_markup=kb,
+            parse_mode=ParseMode.HTML
+        )
+
+        asyncio.create_task(
+            update_progress_message(chat_id, msg, time.time(), duration, caption)
+        )
+
+        timers[chat_id] = asyncio.create_task(
+            auto_next_timer(chat_id, duration, session_id)
+        )
 
 
 
 async def handle_next(chat_id):
     lock = get_chat_lock(chat_id)
     async with lock:
-        # no songs in queue
+
+        # ── No songs left ─────────────────────────────
         if chat_id not in music_queue or not music_queue[chat_id]:
             await cleanup_chat(chat_id)
-
             try:
-                await bot.send_message(chat_id, "✅ Queue finished and cleared.", parse_mode=ParseMode.HTML)
+                await bot.send_message(
+                    chat_id,
+                    "✅ Queue finished and cleared.",
+                    parse_mode=ParseMode.HTML
+                )
             except:
                 pass
             return
 
-        # get next song
+        # ── Get next item ─────────────────────────────
         next_song = music_queue[chat_id].pop(0)
         current_song[chat_id] = next_song
         next_song["start_time"] = time.time()
 
-        try:
-            # switch stream (prefer change_stream if available)
-            if hasattr(call_py, "change_stream"):
-                await call_py.change_stream(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
-            else:
-                await call_py.play(chat_id, MediaStream(next_song["url"], video_flags=MediaStream.Flags.IGNORE))
+        is_video = next_song.get("is_video", False)
 
+        try:
+            # ── Switch stream correctly ─────────────────
+            if hasattr(call_py, "change_stream"):
+                if is_video:
+                    await call_py.change_stream(
+                        chat_id,
+                        MediaStream(next_song["url"])  # 🎬 VIDEO
+                    )
+                else:
+                    await call_py.change_stream(
+                        chat_id,
+                        MediaStream(
+                            next_song["url"],
+                            video_flags=MediaStream.Flags.IGNORE  # 🎧 AUDIO
+                        )
+                    )
+            else:
+                if is_video:
+                    await call_py.play(chat_id, MediaStream(next_song["url"]))
+                else:
+                    await call_py.play(
+                        chat_id,
+                        MediaStream(
+                            next_song["url"],
+                            video_flags=MediaStream.Flags.IGNORE
+                        )
+                    )
+
+            vc_active.add(chat_id)
+
+            # ── UI text ────────────────────────────────
             thumb = f"https://img.youtube.com/vi/{next_song.get('vid')}/hqdefault.jpg"
+            icon = "🎬" if is_video else "🎧"
+            label = "Now Playing (Video)" if is_video else "Now Playing"
+
             caption = (
                 "<blockquote>"
-                "<b>🎧 <u>Now Playing</u></b>\n\n"
+                f"<b>{icon} <u>{label}</u></b>\n\n"
                 f"<b>❍ Title:</b> <i>{next_song['title']}</i>\n"
                 f"<b>❍ Requested by:</b> "
-                f"<a href='tg://user?id={next_song['user'].id}'><u>{next_song['user'].first_name}</u></a>"
+                f"<a href='tg://user?id={next_song['user'].id}'>"
+                f"<u>{next_song['user'].first_name}</u></a>"
                 "</blockquote>"
             )
 
             bar = get_progress_bar(0, next_song.get("duration", 180))
 
             kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
-                InlineKeyboardButton("▶ Resume", callback_data="resume"),
-                InlineKeyboardButton("⏭ Skip", callback_data="skip")],
+                [
+                    InlineKeyboardButton("⏸ Pause", callback_data="pause"),
+                    InlineKeyboardButton("▶ Resume", callback_data="resume"),
+                    InlineKeyboardButton("⏭ Skip", callback_data="skip")
+                ],
                 [InlineKeyboardButton(bar, callback_data="progress")],
                 [InlineKeyboardButton("📜 Lyrics", callback_data=f"lyrics|{next_song['title']}")]
             ])
 
             msg = await bot.send_photo(
-                chat_id,
-                thumb,
+                chat_id=chat_id,
+                photo=thumb,
                 caption=caption,
                 reply_markup=kb,
                 parse_mode=ParseMode.HTML
             )
 
-
+            # ── Progress updater ───────────────────────
             asyncio.create_task(
                 update_progress_message(
                     chat_id,
@@ -1247,20 +1393,29 @@ async def handle_next(chat_id):
                 )
             )
 
+            # ── Auto-next timer ────────────────────────
             vc_session[chat_id] = vc_session.get(chat_id, 0) + 1
             session_id = vc_session[chat_id]
 
-            task = asyncio.create_task(
-                auto_next_timer(chat_id, next_song.get("duration", 180), session_id)
+            timers[chat_id] = asyncio.create_task(
+                auto_next_timer(
+                    chat_id,
+                    next_song.get("duration", 180),
+                    session_id
+                )
             )
-            timers[chat_id] = task
-
 
         except Exception as e:
             try:
-                await bot.send_message(chat_id, f"⚠️ Could not auto-play next queued song:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
+                await bot.send_message(
+                    chat_id,
+                    f"⚠️ Could not auto-play next item:\n<code>{e}</code>",
+                    parse_mode=ParseMode.HTML
+                )
             except:
                 pass
+
+
 
 @handler_client.on_message(filters.command("fplay"))
 async def fplay_command(client: Client, message: Message):
