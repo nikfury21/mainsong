@@ -1382,14 +1382,14 @@ async def handle_next(chat_id):
                 if is_video:
                     await call_py.change_stream(
                         chat_id,
-                        MediaStream(next_song["url"])  # 🎬 VIDEO
+                        MediaStream(next_song["url"])
                     )
                 else:
                     await call_py.change_stream(
                         chat_id,
                         MediaStream(
                             next_song["url"],
-                            video_flags=MediaStream.Flags.IGNORE  # 🎧 AUDIO
+                            video_flags=MediaStream.Flags.IGNORE
                         )
                     )
             else:
@@ -1406,7 +1406,6 @@ async def handle_next(chat_id):
                             video_flags=MediaStream.Flags.IGNORE
                         )
                     )
-
                 if not ok:
                     return
 
@@ -1415,81 +1414,67 @@ async def handle_next(chat_id):
         except Exception as e:
             log.error(f"handle_next failed for {chat_id}: {e}")
             await cleanup_chat(chat_id)
+            return
 
+        # ── UI text (FIXED: now always runs on success) ──
+        thumb = f"https://img.youtube.com/vi/{next_song.get('vid')}/hqdefault.jpg"
+        icon = "🎬" if is_video else "🎧"
+        label = "Now Playing (Video)" if is_video else "Now Playing"
 
-            # ── UI text ────────────────────────────────
-            thumb = f"https://img.youtube.com/vi/{next_song.get('vid')}/hqdefault.jpg"
-            icon = "🎬" if is_video else "🎧"
-            label = "Now Playing (Video)" if is_video else "Now Playing"
+        caption = (
+            "<blockquote>"
+            f"<b>{icon} <u>{label}</u></b>\n\n"
+            f"<b>❍ Title:</b> <i>{next_song['title']}</i>\n"
+            f"<b>❍ Requested by:</b> "
+            f"<a href='tg://user?id={next_song['user'].id}'>"
+            f"<u>{next_song['user'].first_name}</u></a>"
+            "</blockquote>"
+        )
 
-            caption = (
-                "<blockquote>"
-                f"<b>{icon} <u>{label}</u></b>\n\n"
-                f"<b>❍ Title:</b> <i>{next_song['title']}</i>\n"
-                f"<b>❍ Requested by:</b> "
-                f"<a href='tg://user?id={next_song['user'].id}'>"
-                f"<u>{next_song['user'].first_name}</u></a>"
-                "</blockquote>"
+        bar = get_progress_bar(0, next_song.get("duration", 180))
+
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("⏸ Pause", callback_data="pause"),
+                InlineKeyboardButton("▶ Resume", callback_data="resume"),
+                InlineKeyboardButton("⏭ Skip", callback_data="skip")
+            ],
+            [
+                InlineKeyboardButton(bar, callback_data="progress")
+            ]
+        ])
+
+        msg = await bot.send_photo(
+            chat_id=chat_id,
+            photo=thumb,
+            caption=caption,
+            reply_markup=kb,
+            parse_mode=ParseMode.HTML
+        )
+
+        # ── Progress updater ───────────────────────
+        asyncio.create_task(
+            update_progress_message(
+                chat_id,
+                msg,
+                time.time(),
+                next_song.get("duration", 180),
+                caption
             )
+        )
 
-            bar = get_progress_bar(0, next_song.get("duration", 180))
+        # ── Auto-next timer ────────────────────────
+        vc_session[chat_id] = vc_session.get(chat_id, 0) + 1
+        session_id = vc_session[chat_id]
 
-
-
-
-            kb = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("⏸ Pause", callback_data="pause"),
-                    InlineKeyboardButton("▶ Resume", callback_data="resume"),
-                    InlineKeyboardButton("⏭ Skip", callback_data="skip")
-                ],
-                [
-                    InlineKeyboardButton(bar, callback_data="progress")
-                ],
-                
-            ])
-
-
-            msg = await bot.send_photo(
-                chat_id=chat_id,
-                photo=thumb,
-                caption=caption,
-                reply_markup=kb,
-                parse_mode=ParseMode.HTML
+        timers[chat_id] = asyncio.create_task(
+            auto_next_timer(
+                chat_id,
+                next_song.get("duration", 180),
+                session_id
             )
+        )
 
-            # ── Progress updater ───────────────────────
-            asyncio.create_task(
-                update_progress_message(
-                    chat_id,
-                    msg,
-                    time.time(),
-                    next_song.get("duration", 180),
-                    caption
-                )
-            )
-
-            # ── Auto-next timer ────────────────────────
-            vc_session[chat_id] = vc_session.get(chat_id, 0) + 1
-            session_id = vc_session[chat_id]
-
-            timers[chat_id] = asyncio.create_task(
-                auto_next_timer(
-                    chat_id,
-                    next_song.get("duration", 180),
-                    session_id
-                )
-            )
-
-        except Exception as e:
-            try:
-                await bot.send_message(
-                    chat_id,
-                    f"⚠️ Could not auto-play next item:\n<code>{e}</code>",
-                    parse_mode=ParseMode.HTML
-                )
-            except:
-                pass
 
 
 
