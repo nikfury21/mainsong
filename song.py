@@ -1179,10 +1179,15 @@ async def play_command(client: Client, message: Message):
 
 
             asyncio.create_task(update_progress_message(chat_id, msg, time.time(), duration_seconds or 180, caption))
-            task = asyncio.create_task(
+            # 🔥 ALWAYS start auto-next timer for FIRST song
+            old = timers.pop(chat_id, None)
+            if old:
+                old.cancel()
+
+            timers[chat_id] = asyncio.create_task(
                 auto_next_timer(chat_id, duration_seconds or 180, session_id)
             )
-            timers[chat_id] = task
+
 
 
 
