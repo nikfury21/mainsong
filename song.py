@@ -806,7 +806,6 @@ async def update_progress_message(chat_id, msg, start_time, total_dur, caption):
                 InlineKeyboardButton("▶ Resume", callback_data="resume")
             ],
             [InlineKeyboardButton(bar, callback_data="progress")],
-            lyrics_button(current_song[chat_id]["title"]).inline_keyboard[0]
         ])
 
         try:
@@ -1332,7 +1331,6 @@ async def vplay_command(client: Client, message: Message):
                 InlineKeyboardButton("⏭ Skip", callback_data="skip")
             ],
             [InlineKeyboardButton(bar, callback_data="progress")],
-            [safe_lyrics_button(title)]
 
         ])
 
@@ -1436,8 +1434,7 @@ async def handle_next(chat_id):
 
             bar = get_progress_bar(0, next_song.get("duration", 180))
 
-            lyrics_id = uuid.uuid4().hex[:8]
-            LYRICS_CACHE[lyrics_id] = next_song["title"]
+
 
 
             kb = InlineKeyboardMarkup([
@@ -1449,9 +1446,7 @@ async def handle_next(chat_id):
                 [
                     InlineKeyboardButton(bar, callback_data="progress")
                 ],
-                [
-                    InlineKeyboardButton("📜 Lyrics", callback_data=f"lyrics|{lyrics_id}")
-                ]
+                
             ])
 
 
