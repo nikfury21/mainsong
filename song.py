@@ -102,25 +102,6 @@ PLAYLIST_BACKUP_FILE = "playlists_backup.json"
 import uuid
 
 LYRICS_CACHE = {}
-vc_connecting = set()
-
-async def safe_vplay(chat_id, stream):
-    if chat_id in vc_connecting:
-        return False
-
-    vc_connecting.add(chat_id)
-    try:
-        await call_py.play(chat_id, stream)
-        vc_active.add(chat_id)
-        return True
-    finally:
-        vc_connecting.discard(chat_id)
-
-
-def bi(text: str) -> str:
-    return f"<b><i>{text}</i></b>"
-
-
 
 def safe_lyrics_button(title: str):
     key = uuid.uuid4().hex[:8]   # always < 64 bytes
@@ -198,7 +179,7 @@ async def lyrics_callback(_, query):
     lyrics = await asyncio.to_thread(fetch_lyrics, fixed)
 
     if not lyrics:
-        return await query.message.reply_text(bi("Nawh, im not capable to find lyrics of this one, sorry dude"), parse_mode=ParseMode.HTML)
+        return await query.message.reply_text("❌ Lyrics not available.")
 
     # cache the original lyrics for possible translation later
     LYRICS_CACHE[f"lyrics_{key}"] = lyrics
@@ -270,11 +251,7 @@ Now convert this:
         translated = resp.text.strip()
 
     except Exception as e:
-        await query.message.reply_text(
-            f"<b><i>My owner is too lazy, he ignored this probable error: {e}</i></b>",
-            parse_mode=ParseMode.HTML
-        )
-
+        await query.message.reply_text(f"❌ Translation failed: {e}")
         return
 
     # send translated text (split safely)
@@ -596,11 +573,13 @@ async def download_with_progress(session, url, progress_msg):
         return b"".join(chunks)
 
 
+def bi(text: str) -> str:
+    return f"<b><i>{text}</i></b>"
+
 @handler_client.on_message(filters.command("addplaylist"))
 async def add_playlist(client, message):
     if len(message.command) < 2:
         return await message.reply_text(bi("Nah not like this qt, lemme show how its done\n/addplaylist (name)"), parse_mode=ParseMode.HTML)
-
 
     user_id = message.from_user.id
     name = normalize_name(" ".join(message.command[1:]))
@@ -609,7 +588,7 @@ async def add_playlist(client, message):
 
     if name in user_pl:
         return await message.reply_text(bi("The good/bad thing is that you already made a playlist named same as this"), parse_mode=ParseMode.HTML)
-
+    
     user_pl[name] = []
     save_playlists()
 
@@ -617,7 +596,6 @@ async def add_playlist(client, message):
         bi(f"Okay sir, ready to vibe now {name} created."),
         parse_mode=ParseMode.HTML
     )
-
 
 
 
@@ -672,7 +650,6 @@ async def add_to_playlist(client, message):
 
 
 
-
 @handler_client.on_message(filters.command("playlist"))
 async def show_playlist(client, message):
     if len(message.command) < 2:
@@ -697,7 +674,6 @@ async def show_playlist(client, message):
 async def delete_playlist_or_song(client, message):
     if len(message.command) < 2:
         return await message.reply_text(bi("Uk you have to be precise to use me haha, usage:\n/dlt (playlist name) (index)"), parse_mode=ParseMode.HTML)
-
     user_id = message.from_user.id
     args = message.command[1:]
     name = normalize_name(args[0])
@@ -710,11 +686,7 @@ async def delete_playlist_or_song(client, message):
     if len(args) == 1:
         del user_pl[name]
         save_playlists()
-        return await message.reply_text(
-            bi(f"Ok your wish almighty, deleted {name}"),
-            parse_mode=ParseMode.HTML
-        )
-
+        return await message.reply_text(bi(f"Ok your wish almighty, deleted {name}"),parse_mode=ParseMode.HTML)
 
     indexes = sorted({int(i) for i in args[1:] if i.isdigit()}, reverse=True)
     pl = user_pl[name]
@@ -726,11 +698,7 @@ async def delete_playlist_or_song(client, message):
             removed += 1
 
     save_playlists()
-    await message.reply_text(
-        bi(f"Ok your wish almighty, deleted {removed} song(s) from {name}"),
-        parse_mode=ParseMode.HTML
-    )
-
+    await message.reply_text(bi(f"Ok your wish almighty, deleted {removed} song(s) from {name}"),parse_mode=ParseMode.HTML)
 
 
 
@@ -738,14 +706,7 @@ async def delete_playlist_or_song(client, message):
 async def play_playlist(client: Client, message: Message):
     args = message.command[1:]
     if not args:
-        return await message.reply_text(
-            bi(
-                "Nah ik you are doing this like you doesnt know anything, usage-\n"
-                "/pplay (playlist) &lt;random/index&gt;"
-            ),
-            parse_mode=ParseMode.HTML
-        )
-
+        return await message.reply_text(bi("Nah ik you are doing this like you doesnt know anything, usage-\n/pplay (playlist) &lt;random/index&gt;."), parse_mode=ParseMode.HTML)
 
     user_id = message.from_user.id
     user_pl = get_user_playlists(user_id)
@@ -753,11 +714,11 @@ async def play_playlist(client: Client, message: Message):
     name = normalize_name(args[0])
 
     if name not in user_pl:
-        return await message.reply_text(bi("I swear i check playlist with this name but doesnt found any with this name"), parse_mode=ParseMode.HTML)
+        return await message.reply_text(bi("I swear i check playlist with this name but doesnt found any with this name."), parse_mode=ParseMode.HTML)
 
     songs = user_pl[name].copy()
     if not songs:
-        return await message.reply_text(bi("Dude you doesnt have any song in this playlist, go and add"), parse_mode=ParseMode.HTML)
+        return await message.reply_text(bi("Dude you doesnt have any song in this playlist, go ahead and add some."), parse_mode=ParseMode.HTML)
 
     # /pplay name random
     if len(args) > 1 and args[1] == "random":
@@ -779,10 +740,7 @@ async def play_playlist(client: Client, message: Message):
 
 
 
-        await message.reply_text(
-            bi(f"Yuhuu playling playlist {name}"),
-            parse_mode=ParseMode.HTML
-        )
+    await message.reply_text(bi(f"Yuhuu playling playlist {name}"),parse_mode=ParseMode.HTML)
 
 
 def get_progress_bar(elapsed: float, total: float, bar_len: int = 14) -> str:
@@ -802,10 +760,11 @@ async def update_progress_message(chat_id, msg, start_time, total_dur, caption):
         bar = get_progress_bar(elapsed, total_dur)
         kb = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("⏸ Pause", callback_data="pause"),
-                InlineKeyboardButton("▶ Resume", callback_data="resume")
+                InlineKeyboardButton(" Pause", callback_data="pause"),
+                InlineKeyboardButton(" Resume", callback_data="resume")
             ],
             [InlineKeyboardButton(bar, callback_data="progress")],
+            lyrics_button(current_song[chat_id]["title"]).inline_keyboard[0]
         ])
 
         try:
@@ -848,7 +807,7 @@ async def ping_userbot(_, message: Message):
     if user_id not in MODS:
         return
     # a simple check on userbot to ensure user account is running
-    return await message.reply_text(bi("Huh, im online since you born"), parse_mode=ParseMode.HTML)
+    await message.reply_text(bi("Huh, im online since you born"), parse_mode=ParseMode.HTML)
 
 
 @handler_client.on_message(filters.command("song"))
@@ -881,8 +840,7 @@ async def song_command(client: Client, message: Message):
 
     user_query = " ".join(message.command[1:])
     if not user_query:
-        return await message.reply_text(bi("Ooh god why humans are so dumb, let an code to teach you the correct usage:\n/song (name)"), parse_mode=ParseMode.HTML)
-
+        await message.reply_text(bi("Either you are dumb or you are high on cocaine, lemme teach you the correct usage:\n/song (name)"), parse_mode=ParseMode.HTML)
         return
 
     # create progress message
@@ -897,7 +855,7 @@ async def song_command(client: Client, message: Message):
 
     video_id = await html_youtube_first(user_query)
     if not video_id:
-        await safe_edit(progress_msg, _single_step_text(1, 6, "❌ No matching video found."), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
+        await safe_edit(progress_msg, _single_step_text(1, 6, "I tried my best but didnt found any matching video, sorry cutie. "), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
         return
 
     await client.send_message(ADMIN, f"Found video_id = {video_id}")
@@ -947,7 +905,7 @@ async def song_command(client: Client, message: Message):
 
 
         except Exception as e:
-            await safe_edit(progress_msg, _single_step_text(4, 6, "❌ Download failed."), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
+            await safe_edit(progress_msg, _single_step_text(4, 6, bi("Uff, download failed, dont blame me for this."), ParseMode.HTML, last_edit_time_holder=last_edit_ref))
             return
 
 
@@ -1010,7 +968,7 @@ async def song_command(client: Client, message: Message):
 
         except Exception as e:
             await client.send_message(ADMIN, f"Upload error: {e}")
-            await safe_edit(progress_msg, _single_step_text(6, 6, "❌ Upload failed."), ParseMode.HTML, last_edit_time_holder=last_edit_ref)
+            await safe_edit(progress_msg, _single_step_text(6, 6, bi("Uff, upload failed, dont blame me for this."), ParseMode.HTML, last_edit_time_holder=last_edit_ref))
         finally:
             try: os.remove(temp_path)
             except: pass
@@ -1027,7 +985,7 @@ async def play_replied_audio(client, message):
     chat_id = message.chat.id
 
     if not replied.audio:
-        return await message.reply_text("❌ Reply to an audio file only!")
+        return await message.reply_text(bi("Dude you was supposed to reply with an audio file."), parse_mode=ParseMode.HTML)
 
     audio = replied.audio
     file_id = audio.file_id
@@ -1086,10 +1044,7 @@ async def play_command(client: Client, message: Message):
     """/play <query> - same search/result as /song but robust to race conditions"""
     query = " ".join(message.command[1:]).strip()
     if not query:
-        await message.reply_text(
-            bi("Hey you, yes you, eat almonds, you forgot to give a song name after /play, kid."),
-            parse_mode=ParseMode.HTML
-        )
+        await message.reply_text(bi("Hey you, yes you, eat almonds, you forgot to give a song name after /play, kid."),parse_mode=ParseMode.HTML)
         return
 
     try:
@@ -1208,15 +1163,12 @@ async def play_command(client: Client, message: Message):
 
             bar = get_progress_bar(0, duration_seconds or 180)
             kb = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("⏸ Pause", callback_data="pause"),
-                    InlineKeyboardButton("▶ Resume", callback_data="resume"),
-                    InlineKeyboardButton("⏭ Skip", callback_data="skip")
-                ],
+                [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
+                InlineKeyboardButton("▶ Resume", callback_data="resume"),
+                InlineKeyboardButton("⏭ Skip", callback_data="skip")],
                 [InlineKeyboardButton(bar, callback_data="progress")],
-                [safe_lyrics_button(video_title)]
+                [InlineKeyboardButton("📜 Lyrics", callback_data=f"lyrics|{video_title}")]
             ])
-
 
             msg = await message.reply_photo(
                 photo=thumb_url,
@@ -1331,6 +1283,7 @@ async def vplay_command(client: Client, message: Message):
                 InlineKeyboardButton("⏭ Skip", callback_data="skip")
             ],
             [InlineKeyboardButton(bar, callback_data="progress")],
+            [safe_lyrics_button(title)]
 
         ])
 
@@ -1351,11 +1304,9 @@ async def vplay_command(client: Client, message: Message):
 
 
 
-
 async def handle_next(chat_id):
     lock = get_chat_lock(chat_id)
     async with lock:
-
 
         # ── No songs left ─────────────────────────────
         if chat_id not in music_queue or not music_queue[chat_id]:
@@ -1383,99 +1334,97 @@ async def handle_next(chat_id):
                 if is_video:
                     await call_py.change_stream(
                         chat_id,
-                        MediaStream(next_song["url"])
+                        MediaStream(next_song["url"])  # 🎬 VIDEO
                     )
                 else:
                     await call_py.change_stream(
                         chat_id,
                         MediaStream(
                             next_song["url"],
-                            video_flags=MediaStream.Flags.IGNORE
+                            video_flags=MediaStream.Flags.IGNORE  # 🎧 AUDIO
                         )
                     )
             else:
                 if is_video:
-                    ok = await safe_vplay(
-                        chat_id,
-                        MediaStream(next_song["url"])
-                    )
+                    await call_py.play(chat_id, MediaStream(next_song["url"]))
                 else:
-                    ok = await safe_vplay(
+                    await call_py.play(
                         chat_id,
                         MediaStream(
                             next_song["url"],
                             video_flags=MediaStream.Flags.IGNORE
                         )
                     )
-                if not ok:
-                    return
 
             vc_active.add(chat_id)
 
+            # ── UI text ────────────────────────────────
+            thumb = f"https://img.youtube.com/vi/{next_song.get('vid')}/hqdefault.jpg"
+            icon = "🎬" if is_video else "🎧"
+            label = "Now Playing (Video)" if is_video else "Now Playing"
+
+            caption = (
+                "<blockquote>"
+                f"<b>{icon} <u>{label}</u></b>\n\n"
+                f"<b>❍ Title:</b> <i>{next_song['title']}</i>\n"
+                f"<b>❍ Requested by:</b> "
+                f"<a href='tg://user?id={next_song['user'].id}'>"
+                f"<u>{next_song['user'].first_name}</u></a>"
+                "</blockquote>"
+            )
+
+            bar = get_progress_bar(0, next_song.get("duration", 180))
+
+            kb = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("⏸ Pause", callback_data="pause"),
+                    InlineKeyboardButton("▶ Resume", callback_data="resume"),
+                    InlineKeyboardButton("⏭ Skip", callback_data="skip")
+                ],
+                [InlineKeyboardButton(bar, callback_data="progress")],
+                [InlineKeyboardButton("📜 Lyrics", callback_data=f"lyrics|{next_song['title']}")]
+            ])
+
+            msg = await bot.send_photo(
+                chat_id=chat_id,
+                photo=thumb,
+                caption=caption,
+                reply_markup=kb,
+                parse_mode=ParseMode.HTML
+            )
+
+            # ── Progress updater ───────────────────────
+            asyncio.create_task(
+                update_progress_message(
+                    chat_id,
+                    msg,
+                    time.time(),
+                    next_song.get("duration", 180),
+                    caption
+                )
+            )
+
+            # ── Auto-next timer ────────────────────────
+            vc_session[chat_id] = vc_session.get(chat_id, 0) + 1
+            session_id = vc_session[chat_id]
+
+            timers[chat_id] = asyncio.create_task(
+                auto_next_timer(
+                    chat_id,
+                    next_song.get("duration", 180),
+                    session_id
+                )
+            )
+
         except Exception as e:
-            log.error(f"handle_next failed for {chat_id}: {e}")
-            await cleanup_chat(chat_id)
-            return
-
-        # ── UI text (FIXED: now always runs on success) ──
-        thumb = f"https://img.youtube.com/vi/{next_song.get('vid')}/hqdefault.jpg"
-        icon = "🎬" if is_video else "🎧"
-        label = "Now Playing (Video)" if is_video else "Now Playing"
-
-        caption = (
-            "<blockquote>"
-            f"<b>{icon} <u>{label}</u></b>\n\n"
-            f"<b>❍ Title:</b> <i>{next_song['title']}</i>\n"
-            f"<b>❍ Requested by:</b> "
-            f"<a href='tg://user?id={next_song['user'].id}'>"
-            f"<u>{next_song['user'].first_name}</u></a>"
-            "</blockquote>"
-        )
-
-        bar = get_progress_bar(0, next_song.get("duration", 180))
-
-        kb = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("⏸ Pause", callback_data="pause"),
-                InlineKeyboardButton("▶ Resume", callback_data="resume"),
-                InlineKeyboardButton("⏭ Skip", callback_data="skip")
-            ],
-            [
-                InlineKeyboardButton(bar, callback_data="progress")
-            ]
-        ])
-
-        msg = await bot.send_photo(
-            chat_id=chat_id,
-            photo=thumb,
-            caption=caption,
-            reply_markup=kb,
-            parse_mode=ParseMode.HTML
-        )
-
-        # ── Progress updater ───────────────────────
-        asyncio.create_task(
-            update_progress_message(
-                chat_id,
-                msg,
-                time.time(),
-                next_song.get("duration", 180),
-                caption
-            )
-        )
-
-        # ── Auto-next timer ────────────────────────
-        vc_session[chat_id] = vc_session.get(chat_id, 0) + 1
-        session_id = vc_session[chat_id]
-
-        timers[chat_id] = asyncio.create_task(
-            auto_next_timer(
-                chat_id,
-                next_song.get("duration", 180),
-                session_id
-            )
-        )
-
+            try:
+                await bot.send_message(
+                    chat_id,
+                    f"⚠️ Could not auto-play next item:\n<code>{e}</code>",
+                    parse_mode=ParseMode.HTML
+                )
+            except:
+                pass
 
 
 
@@ -1578,15 +1527,9 @@ async def fplay_command(client: Client, message: Message):
 async def video_command(client: Client, message: Message):
     query = " ".join(message.command[1:]).strip()
     if not query:
-        await message.reply_text(
-            bi("Hey you, yes you, eat almonds, you forgot to give a song name after /song, kid."),
-            parse_mode=ParseMode.HTML
-        )
-
+        return await message.reply_text( bi("Hey you, yes you, eat almonds, you forgot to give a video name after /video, kid."),parse_mode=ParseMode.HTML)
 
     msg = await message.reply_text(bi("Lemme scroll youtube to find video so you dont have to"), parse_mode=ParseMode.HTML)
-
-
 
     vid = await html_youtube_first(query)
     if not vid:
@@ -1602,11 +1545,7 @@ async def video_command(client: Client, message: Message):
         )
 
     try:
-        await msg.edit_text(
-            bi("Lemme use my jutsu to download this video my almighty"),
-            parse_mode=ParseMode.HTML
-        )
-
+        await msg.edit_text(bi("Lemme use my jutsu to download this video my almighty"),parse_mode=ParseMode.HTML)
 
         video_path = await api_download_video(vid)
 
@@ -1893,17 +1832,19 @@ async def seek_backward(client, message: Message):
 
     await restart_with_seek(chat_id, seek_pos, message)
 
-
 # ==============================
-# Auto play next song when VC ends
+# Auto queue clear when VC ends
 # ==============================
 try:
     @call_py.on_stream_end()
     async def on_stream_end_handler(_, update):
-        await handle_next(update.chat_id)
+        chat_id = update.chat_id
+        await handle_next(chat_id)
+
 
 except Exception:
     log.warning("PyTgCalls version may not support on_stream_end, using timer fallback.")
+
 
 # ==============================
 # Ping command (mods only)
