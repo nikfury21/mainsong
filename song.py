@@ -1353,12 +1353,9 @@ async def vplay_command(client: Client, message: Message):
 
 
 async def handle_next(chat_id):
-    try:
-        await call_py.leave_call(chat_id)
-    except:
-        pass
     lock = get_chat_lock(chat_id)
     async with lock:
+
 
         # ── No songs left ─────────────────────────────
         if chat_id not in music_queue or not music_queue[chat_id]:
