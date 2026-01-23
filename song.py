@@ -104,7 +104,6 @@ import uuid
 LYRICS_CACHE = {}
 vc_connecting = set()
 
-
 async def safe_vplay(chat_id, stream):
     if chat_id in vc_connecting:
         return False
@@ -1365,10 +1364,9 @@ async def handle_next(chat_id):
             try:
                 await bot.send_message(
                     chat_id,
-                    bi("Please ignore this, i also dk how to remove this😭🙏🏿"),
+                    "✅ Queue finished and cleared.",
                     parse_mode=ParseMode.HTML
                 )
-
             except:
                 pass
             return
@@ -1398,9 +1396,12 @@ async def handle_next(chat_id):
                     )
             else:
                 if is_video:
-                    await call_py.play(chat_id, MediaStream(next_song["url"]))
+                    ok = await safe_vplay(
+                        chat_id,
+                        MediaStream(next_song["url"])
+                    )
                 else:
-                    await call_py.play(
+                    ok = await safe_vplay(
                         chat_id,
                         MediaStream(
                             next_song["url"],
@@ -1408,7 +1409,15 @@ async def handle_next(chat_id):
                         )
                     )
 
+                if not ok:
+                    return
+
             vc_active.add(chat_id)
+
+        except Exception as e:
+            log.error(f"handle_next failed for {chat_id}: {e}")
+            await cleanup_chat(chat_id)
+
 
             # ── UI text ────────────────────────────────
             thumb = f"https://img.youtube.com/vi/{next_song.get('vid')}/hqdefault.jpg"
@@ -1427,15 +1436,24 @@ async def handle_next(chat_id):
 
             bar = get_progress_bar(0, next_song.get("duration", 180))
 
+            lyrics_id = uuid.uuid4().hex[:8]
+            LYRICS_CACHE[lyrics_id] = next_song["title"]
+
+
             kb = InlineKeyboardMarkup([
                 [
                     InlineKeyboardButton("⏸ Pause", callback_data="pause"),
                     InlineKeyboardButton("▶ Resume", callback_data="resume"),
                     InlineKeyboardButton("⏭ Skip", callback_data="skip")
                 ],
-                [InlineKeyboardButton(bar, callback_data="progress")],
-                [InlineKeyboardButton("📜 Lyrics", callback_data=f"lyrics|{next_song['title']}")]
+                [
+                    InlineKeyboardButton(bar, callback_data="progress")
+                ],
+                [
+                    InlineKeyboardButton("📜 Lyrics", callback_data=f"lyrics|{lyrics_id}")
+                ]
             ])
+
 
             msg = await bot.send_photo(
                 chat_id=chat_id,
