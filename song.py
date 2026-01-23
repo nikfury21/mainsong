@@ -1428,6 +1428,17 @@ async def handle_next(chat_id):
 
 
 
+if HAS_STREAM_END:
+    @call_py.on_stream_end()
+    async def stream_end_handler(_, update):
+        chat_id = update.chat_id
+
+        if chat_id not in vc_active:
+            return
+
+        await handle_next(chat_id)
+
+
 @handler_client.on_message(filters.command("fplay"))
 async def fplay_command(client: Client, message: Message):
     """Force play a song immediately, stopping current playback. The previous current song is moved to the front of the queue."""
