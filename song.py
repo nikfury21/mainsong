@@ -1353,6 +1353,10 @@ async def vplay_command(client: Client, message: Message):
 
 
 async def handle_next(chat_id):
+    try:
+        await call_py.leave_call(chat_id)
+    except:
+        pass
     lock = get_chat_lock(chat_id)
     async with lock:
 
@@ -1892,19 +1896,17 @@ async def seek_backward(client, message: Message):
 
     await restart_with_seek(chat_id, seek_pos, message)
 
+
 # ==============================
-# Auto queue clear when VC ends
+# Auto play next song when VC ends
 # ==============================
 try:
     @call_py.on_stream_end()
     async def on_stream_end_handler(_, update):
-        chat_id = update.chat_id
-        await handle_next(chat_id)
-
+        await handle_next(update.chat_id)
 
 except Exception:
     log.warning("PyTgCalls version may not support on_stream_end, using timer fallback.")
-
 
 # ==============================
 # Ping command (mods only)
