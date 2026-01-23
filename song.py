@@ -739,7 +739,14 @@ async def delete_playlist_or_song(client, message):
 async def play_playlist(client: Client, message: Message):
     args = message.command[1:]
     if not args:
-        return await message.reply_text(bi("Nah ik you are doing this like you doesnt know anything, usage-\n/pplay (playlist) <random/index>"), parse_mode=ParseMode.HTML)
+        return await message.reply_text(
+            bi(
+                "Nah ik you are doing this like you doesnt know anything, usage-\n"
+                "/pplay (playlist) &lt;random/index&gt;"
+            ),
+            parse_mode=ParseMode.HTML
+        )
+
 
     user_id = message.from_user.id
     user_pl = get_user_playlists(user_id)
@@ -1203,12 +1210,15 @@ async def play_command(client: Client, message: Message):
 
             bar = get_progress_bar(0, duration_seconds or 180)
             kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("⏸ Pause", callback_data="pause"),
-                InlineKeyboardButton("▶ Resume", callback_data="resume"),
-                InlineKeyboardButton("⏭ Skip", callback_data="skip")],
+                [
+                    InlineKeyboardButton("⏸ Pause", callback_data="pause"),
+                    InlineKeyboardButton("▶ Resume", callback_data="resume"),
+                    InlineKeyboardButton("⏭ Skip", callback_data="skip")
+                ],
                 [InlineKeyboardButton(bar, callback_data="progress")],
-                [InlineKeyboardButton("📜 Lyrics", callback_data=f"lyrics|{video_title}")]
+                [safe_lyrics_button(video_title)]
             ])
+
 
             msg = await message.reply_photo(
                 photo=thumb_url,
