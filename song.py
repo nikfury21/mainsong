@@ -897,7 +897,8 @@ async def song_command(client: Client, message: Message):
         try:
             temp_dir = tempfile.mkdtemp()
             # fetch real YouTube metadata
-            video_title, duration, thumb_url = await get_youtube_details(video_id)
+            video_title, channel, views, duration, thumb_url = await get_youtube_details(video_id)
+
 
             # fallback safety
             video_title = video_title or user_query
@@ -921,7 +922,16 @@ async def song_command(client: Client, message: Message):
 
 
         except Exception as e:
-            await safe_edit(progress_msg, _single_step_text(4, 6, bi("Uff, download failed, dont blame me for this."), ParseMode.HTML, last_edit_time_holder=last_edit_ref))
+            await safe_edit(
+                progress_msg,
+                _single_step_text(
+                    4, 6,
+                    bi("Uff, download failed, dont blame me for this."),
+                    ParseMode.HTML
+                )
+            )
+
+
             return
 
 
