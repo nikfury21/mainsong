@@ -138,6 +138,15 @@ def is_hindi(text: str) -> bool:
     return bool(re.search(r"[\u0900-\u097F]", text)) if text else False
 
 
+def format_views(count):
+    if not count:
+        return "0"
+    count = int(count)
+    if count >= 1_000_000:
+        return f"{count/1_000_000:.1f}M"
+    if count >= 1_000:
+        return f"{count/1_000:.1f}K"
+    return str(count)
 
 
 
@@ -329,13 +338,16 @@ async def download_thumbnail(url: str) -> str | None:
         return None
 
 async def get_youtube_details(video_id: str):
-    """Return (title, duration_seconds, thumbnail_url)"""
+    """
+    Returns:
+    title, channel, views, duration_seconds, thumbnail_url
+    """
     if not YOUTUBE_API_KEY:
-        return None, 0, f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+        return None, None, None, 0, f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
 
     url = "https://www.googleapis.com/youtube/v3/videos"
     params = {
-        "part": "snippet,contentDetails",
+        "part": "snippet,contentDetails,statistics",
         "id": video_id,
         "key": YOUTUBE_API_KEY
     }
@@ -343,18 +355,22 @@ async def get_youtube_details(video_id: str):
     async with aiohttp.ClientSession() as session:
         async with session.get(url, params=params) as r:
             if r.status != 200:
-                return None, 0, f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+                return None, None, None, 0, f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
 
             data = await r.json()
             items = data.get("items", [])
             if not items:
-                return None, 0, f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+                return None, None, None, 0, f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
 
-            snippet = items[0]["snippet"]
-            duration = iso8601_to_seconds(items[0]["contentDetails"]["duration"])
+            item = items[0]
+            snippet = item["snippet"]
+            stats = item.get("statistics", {})
+            duration = iso8601_to_seconds(item["contentDetails"]["duration"])
 
             return (
                 snippet.get("title"),
+                snippet.get("channelTitle"),
+                stats.get("viewCount"),
                 duration,
                 snippet["thumbnails"]["high"]["url"]
             )
@@ -1543,15 +1559,29 @@ async def fplay_command(client: Client, message: Message):
 async def video_command(client: Client, message: Message):
     query = " ".join(message.command[1:]).strip()
     if not query:
-        return await message.reply_text( bi("Hey you, yes you, eat almonds, you forgot to give a video name after /video, kid."),parse_mode=ParseMode.HTML)
+        return await message.reply_text(
+            bi("Hey you, yes you, eat almonds, you forgot to give a video name after /video, kid."),
+            parse_mode=ParseMode.HTML
+        )
 
-    msg = await message.reply_text(bi("Lemme scroll youtube to find video so you dont have to"), parse_mode=ParseMode.HTML)
+    msg = await message.reply_text(
+        bi("Lemme scroll YouTube to find the video so you don’t have to 😌"),
+        parse_mode=ParseMode.HTML
+    )
 
+    # 🔍 Search video
     vid = await html_youtube_first(query)
     if not vid:
         return await msg.edit_text("❌ No video found.")
 
-    title, duration, thumb_url = await get_youtube_details(vid)
+    # 🎯 Fetch REAL YouTube details
+    title, channel, views, duration, thumb_url = await get_youtube_details(vid)
+
+    # Safety fallbacks
+    title = title or query
+    channel = channel or "Unknown Channel"
+    duration = duration or 0
+    views = views or 0
 
     if duration > 3600:
         return await msg.edit_text(
@@ -1561,11 +1591,15 @@ async def video_command(client: Client, message: Message):
         )
 
     try:
-        await msg.edit_text(bi("Lemme use my jutsu to download this video my almighty"),parse_mode=ParseMode.HTML)
+        await msg.edit_text(
+            bi("Using forbidden jutsu to download this video… 🌀"),
+            parse_mode=ParseMode.HTML
+        )
 
+        # ⬇️ Download video
         video_path = await api_download_video(vid)
 
-        # ---- DOWNLOAD THUMBNAIL LOCALLY (FIX) ----
+        # 🖼 Download thumbnail locally (Telegram requires local file)
         thumb_path = None
         try:
             async with aiohttp.ClientSession() as session:
@@ -1577,18 +1611,51 @@ async def video_command(client: Client, message: Message):
                             f.write(await r.read())
         except:
             thumb_path = None
-        # ------------------------------------------
 
+        # 🔗 URLs
+        youtube_url = f"https://youtu.be/{vid}"
+        views_text = format_views(views)
+        user = message.from_user
+
+        # 🎨 FINAL UI CAPTION
+        caption = f"""
+━─━─━━─━「₪」━━─━─━─━
+
+࿇ <b>𝗩𝗶𝗱𝗲𝗼 𝗦𝗲𝗮𝗿𝗰𝗵 𝗖𝗼𝗺𝗽𝗹𝗲𝘁𝗲𝗱!</b> Here's your video ;
+
+❖ <b>𝗗𝗲𝘁𝗮𝗶𝗹𝘀 :</b>
+<blockquote>{title}</blockquote>
+
+❖ <b>𝗖𝗵𝗮𝗻𝗻𝗲𝗹 :</b>
+<blockquote>{channel}</blockquote>
+
+❖ <b>𝗩𝗶𝗲𝘄𝘀 :</b>
+{views_text}
+
+❖ <b>𝗬𝗼𝘂𝗧𝘂𝗯𝗲 :</b>
+<a href="{youtube_url}">{title}</a>
+
+❖ <b>𝗟𝘆𝗿𝗶𝗰𝘀 :</b>
+<a href="{youtube_url}">Official Video Lyrics</a>
+
+• <b>𝗩𝗶𝗱𝗲𝗼 𝗥𝗲𝗾𝘂𝗲𝘀𝘁𝗲𝗱 𝗕𝘆 :</b>
+<a href="tg://user?id={user.id}">{user.first_name}</a>
+
+━─━─━━─━「₪」━━─━─━─━
+"""
+
+        # 📤 Send video
         await client.send_video(
             chat_id=message.chat.id,
             video=video_path,
-            thumb=thumb_path if thumb_path else None,  # ✅ LOCAL FILE ONLY
-            caption=f"🎬 <b>{title}</b>\n⏱ {format_time(duration)}",
+            thumb=thumb_path if thumb_path else None,
+            caption=caption,
             parse_mode=ParseMode.HTML,
-            supports_streaming=True
+            supports_streaming=True,
+            disable_web_page_preview=True
         )
 
-        # ---- CLEANUP ----
+        # 🧹 Cleanup
         try:
             os.remove(video_path)
         except:
