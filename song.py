@@ -1652,7 +1652,6 @@ async def video_command(client: Client, message: Message):
             caption=caption,
             parse_mode=ParseMode.HTML,
             supports_streaming=True,
-            disable_web_page_preview=True
         )
 
         # 🧹 Cleanup
