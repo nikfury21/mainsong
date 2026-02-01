@@ -1555,6 +1555,9 @@ async def fplay_command(client: Client, message: Message):
         except Exception as e:
             await message.reply_text(f"❌ Could not force-play: {e}")
 
+
+
+
 @handler_client.on_message(filters.command("video"))
 async def video_command(client: Client, message: Message):
     query = " ".join(message.command[1:]).strip()
@@ -1616,6 +1619,8 @@ async def video_command(client: Client, message: Message):
         youtube_url = f"https://youtu.be/{vid}"
         views_text = format_views(views)
         user = message.from_user
+        lyrics_url = f"https://www.google.com/search?q={title.replace(' ', '+')}+lyrics"
+
 
         # 🎨 FINAL UI CAPTION
         caption = f"""
@@ -1630,19 +1635,20 @@ async def video_command(client: Client, message: Message):
 <blockquote>{channel}</blockquote>
 
 ❖ <b>𝗩𝗶𝗲𝘄𝘀 :</b>
-{views_text}
+<blockquote>{views_text}</blockquote>
 
 ❖ <b>𝗬𝗼𝘂𝗧𝘂𝗯𝗲 :</b>
-<a href="{youtube_url}">{title}</a>
+<blockquote><a href="{youtube_url}">{title}</a></blockquote>
 
 ❖ <b>𝗟𝘆𝗿𝗶𝗰𝘀 :</b>
-<a href="{youtube_url}">Official Video Lyrics</a>
+<blockquote><a href="{lyrics_url}">Official Video Lyrics</a></blockquote>
 
 • <b>𝗩𝗶𝗱𝗲𝗼 𝗥𝗲𝗾𝘂𝗲𝘀𝘁𝗲𝗱 𝗕𝘆 :</b>
-<a href="tg://user?id={user.id}">{user.first_name}</a>
+<blockquote><a href="tg://user?id={user.id}">{user.first_name}</a></blockquote>
 
 ━─━─━━─━「₪」━━─━─━─━
 """
+
 
         # 📤 Send video
         await client.send_video(
