@@ -1624,25 +1624,21 @@ async def video_command(client: Client, message: Message):
 
         # 🎨 FINAL UI CAPTION
         caption = f"""
-━─━─━━─━「₪」━━─━─━─━
 
 ࿇ <b>𝗩𝗶𝗱𝗲𝗼 𝗦𝗲𝗮𝗿𝗰𝗵 𝗖𝗼𝗺𝗽𝗹𝗲𝘁𝗲𝗱!</b> Here's your video ;
 
+━─━─━━─━「₪」━━─━─━─━
+
 ❖ <b>𝗗𝗲𝘁𝗮𝗶𝗹𝘀 :</b>
 <blockquote>{title}</blockquote>
-
 ❖ <b>𝗖𝗵𝗮𝗻𝗻𝗲𝗹 :</b>
 <blockquote>{channel}</blockquote>
-
 ❖ <b>𝗩𝗶𝗲𝘄𝘀 :</b>
 <blockquote>{views_text}</blockquote>
-
 ❖ <b>𝗬𝗼𝘂𝗧𝘂𝗯𝗲 :</b>
 <blockquote><a href="{youtube_url}">{title}</a></blockquote>
-
 ❖ <b>𝗟𝘆𝗿𝗶𝗰𝘀 :</b>
 <blockquote><a href="{lyrics_url}">Official Video Lyrics</a></blockquote>
-
 • <b>𝗩𝗶𝗱𝗲𝗼 𝗥𝗲𝗾𝘂𝗲𝘀𝘁𝗲𝗱 𝗕𝘆 :</b>
 <blockquote><a href="tg://user?id={user.id}">{user.first_name}</a></blockquote>
 
