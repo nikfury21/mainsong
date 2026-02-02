@@ -968,24 +968,25 @@ async def song_command(client: Client, message: Message):
             user = message.from_user
 
             caption = f"""
-            ࿇ <b>𝗦𝗼𝗻𝗴 𝗦𝗲𝗮𝗿𝗰𝗵 𝗖𝗼𝗺𝗽𝗹𝗲𝘁𝗲𝗱!</b> Here's your song ;
 
-            ━─━─━━─━「₪」━━─━─━─━
+࿇ <b>𝗦𝗼𝗻𝗴 𝗦𝗲𝗮𝗿𝗰𝗵 𝗖𝗼𝗺𝗽𝗹𝗲𝘁𝗲𝗱!</b> Here's your song ;
 
-            ❖ <b>𝗗𝗲𝘁𝗮𝗶𝗹𝘀 :</b>
-            <blockquote>{title}</blockquote>
-            ❖ <b>𝗔𝗿𝘁𝗶𝘀𝘁 / 𝗖𝗵𝗮𝗻𝗻𝗲𝗹 :</b>
-            <blockquote>{channel}</blockquote>
-            ❖ <b>𝗩𝗶𝗲𝘄𝘀 :</b>
-            <blockquote>{views_text}</blockquote>
-            ❖ <b>𝗬𝗼𝘂𝗧𝘂𝗯𝗲 :</b>
-            <blockquote><a href="{youtube_url}">{title}</a></blockquote>
-            ❖ <b>𝗟𝘆𝗿𝗶𝗰𝘀 :</b>
-            <blockquote><a href="{lyrics_url}">Official Song Lyrics</a></blockquote>
-            • <b>𝗦𝗼𝗻𝗴 𝗥𝗲𝗾𝘂𝗲𝘀𝘁𝗲𝗱 𝗕𝘆 :</b>
-            <blockquote><a href="tg://user?id={user.id}">{user.first_name}</a></blockquote>
+━─━─━━─━「₪」━━─━─━─━
 
-            ━─━─━━─━「₪」━━─━─━─━
+❖ <b>𝗗𝗲𝘁𝗮𝗶𝗹𝘀 :</b>
+<blockquote>{title}</blockquote>
+❖ <b>𝗔𝗿𝘁𝗶𝘀𝘁 / 𝗖𝗵𝗮𝗻𝗻𝗲𝗹 :</b>
+<blockquote>{channel}</blockquote>
+❖ <b>𝗩𝗶𝗲𝘄𝘀 :</b>
+<blockquote>{views_text}</blockquote>
+❖ <b>𝗬𝗼𝘂𝗧𝘂𝗯𝗲 :</b>
+<blockquote><a href="{youtube_url}">{title}</a></blockquote>
+❖ <b>𝗟𝘆𝗿𝗶𝗰𝘀 :</b>
+<blockquote><a href="{lyrics_url}">Official Song Lyrics</a></blockquote>
+• <b>𝗦𝗼𝗻𝗴 𝗥𝗲𝗾𝘂𝗲𝘀𝘁𝗲𝗱 𝗕𝘆 :</b>
+<blockquote><a href="tg://user?id={user.id}">{user.first_name}</a></blockquote>
+
+━─━─━━─━「₪」━━─━─━─━
             """
 
 
@@ -1001,7 +1002,6 @@ async def song_command(client: Client, message: Message):
                 caption=caption,
                 parse_mode=ParseMode.HTML,
                 file_name=f"{title}.mp3",
-                reply_markup=lyrics_button(title)
             )
 
 
