@@ -110,47 +110,6 @@ def safe_lyrics_button(title: str):
     return InlineKeyboardButton("📜 Lyrics", callback_data=f"lyrics|{key}")
 
 
-def safe_text(text: str) -> str:
-    if not text:
-        return ""
-    return text.encode("utf-8", "ignore").decode("utf-8")
-
-import sys
-
-def force_utf8():
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="ignore")
-        sys.stderr.reconfigure(encoding="utf-8", errors="ignore")
-    except:
-        pass
-
-force_utf8()
-
-
-from pyrogram import Client as _Client
-
-_original_send_message = _Client.send_message
-_original_send_audio = _Client.send_audio
-_original_send_video = _Client.send_video
-_original_send_photo = _Client.send_photo
-_original_edit_text = _Client.edit_message_text
-_original_edit_caption = _Client.edit_message_caption
-
-
-async def _safe_wrapper(func, *args, **kwargs):
-    for k in ("text", "caption", "file_name"):
-        if k in kwargs:
-            kwargs[k] = safe_text(kwargs[k])
-    return await func(*args, **kwargs)
-
-
-_Client.send_message = lambda self, *a, **k: _safe_wrapper(_original_send_message, self, *a, **k)
-_Client.send_audio   = lambda self, *a, **k: _safe_wrapper(_original_send_audio, self, *a, **k)
-_Client.send_video   = lambda self, *a, **k: _safe_wrapper(_original_send_video, self, *a, **k)
-_Client.send_photo   = lambda self, *a, **k: _safe_wrapper(_original_send_photo, self, *a, **k)
-_Client.edit_message_text = lambda self, *a, **k: _safe_wrapper(_original_edit_text, self, *a, **k)
-_Client.edit_message_caption = lambda self, *a, **k: _safe_wrapper(_original_edit_caption, self, *a, **k)
-
 
 def fetch_lyrics(query: str) -> str | None:
     try:
@@ -1004,8 +963,6 @@ async def song_command(client: Client, message: Message):
             artist, _ = parse_artist_and_title(video_title)
             title = video_title
 
-
-
             youtube_url = f"https://youtu.be/{video_id}"
             lyrics_url = f"https://www.google.com/search?q={title.replace(' ', '+')}+lyrics"
             views_text = format_views(views)
@@ -1046,7 +1003,6 @@ async def song_command(client: Client, message: Message):
                 caption=caption,
                 parse_mode=ParseMode.HTML,
                 file_name=f"{title}.mp3",
-
             )
 
 
