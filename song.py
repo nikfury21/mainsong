@@ -1342,7 +1342,6 @@ async def vplay_command(client: Client, message: Message):
                 InlineKeyboardButton("⏭ Skip", callback_data="skip")
             ],
             [InlineKeyboardButton(bar, callback_data="progress")],
-            [safe_lyrics_button(title)]
 
         ])
 
