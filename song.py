@@ -1262,7 +1262,8 @@ async def vplay_command(client: Client, message: Message):
 
     try:
         video_path = await api_download_video(vid)
-        title, duration, thumb_url = await get_youtube_details(vid)
+        title, _, _, duration, thumb_url = await get_youtube_details(vid)
+
 
         title = title or query
         duration = duration or 180
