@@ -1844,48 +1844,71 @@ async def restart_with_seek(chat_id: int, seek_pos: int, message: Message):
         await message.reply(f"❌ Failed to seek: {e}")
 
 
-@handler_client.on_message(filters.group & filters.command("seek"))
-async def seek_forward(client, message: Message):
-    args = message.text.split()
-    if len(args) < 2 or not args[1].isdigit():
-        await message.reply("❌ Usage: /seek <seconds>")
-        return
-
+@handler_client.on_message(filters.command("seek"))
+async def seek_cmd(client, message):
     chat_id = message.chat.id
-    if chat_id not in current_song:
-        return await message.reply("❌ Nothing is playing.")
 
-    seconds = int(args[1])
-    song_info = current_song[chat_id]
+    if len(message.command) < 2:
+        return await message.reply_text("❌ Usage: /seek <seconds>")
 
-    elapsed = int(time.time() - song_info.get("start_time", time.time()))
-    seek_pos = elapsed + seconds
+    try:
+        seconds = int(message.command[1])
+        if seconds <= 0:
+            raise ValueError
+    except:
+        return await message.reply_text("❌ Enter a valid number of seconds.")
 
-    duration = int(song_info.get("duration", 0))
-    if seek_pos >= duration:
-        seek_pos = duration
+    # 🔥 REAL PLAYING CHECK (important)
+    try:
+        call = call_py.get_call(chat_id)
+    except:
+        return await message.reply_text("❌ Nothing is playing.")
 
-    await restart_with_seek(chat_id, seek_pos, message)
+    # 🔁 SEEK FORWARD
+    await call_py.change_stream(
+        chat_id,
+        MediaStream(
+            call.input.filename,
+            seek=seconds,
+            video_flags=MediaStream.Flags.IGNORE
+        )
+    )
+
+    await message.reply_text(f"⏩ Seeked forward {seconds} seconds.")
 
 
-@handler_client.on_message(filters.group & filters.command("seekback"))
-async def seek_backward(client, message: Message):
-    args = message.text.split()
-    if len(args) < 2 or not args[1].isdigit():
-        await message.reply("❌ Usage: /seekback <seconds>")
-        return
-
+@handler_client.on_message(filters.command("seekback"))
+async def seekback_cmd(client, message):
     chat_id = message.chat.id
-    if chat_id not in current_song:
-        return await message.reply("❌ Nothing is playing.")
 
-    seconds = int(args[1])
-    song_info = current_song[chat_id]
+    if len(message.command) < 2:
+        return await message.reply_text("❌ Usage: /seekback <seconds>")
 
-    elapsed = int(time.time() - song_info.get("start_time", time.time()))
-    seek_pos = max(0, elapsed - seconds)
+    try:
+        seconds = int(message.command[1])
+        if seconds <= 0:
+            raise ValueError
+    except:
+        return await message.reply_text("❌ Enter a valid number of seconds.")
 
-    await restart_with_seek(chat_id, seek_pos, message)
+    # 🔥 REAL PLAYING CHECK
+    try:
+        call = call_py.get_call(chat_id)
+    except:
+        return await message.reply_text("❌ Nothing is playing.")
+
+    # ⏪ SEEK BACKWARD (negative seek)
+    await call_py.change_stream(
+        chat_id,
+        MediaStream(
+            call.input.filename,
+            seek=-seconds,
+            video_flags=MediaStream.Flags.IGNORE
+        )
+    )
+
+    await message.reply_text(f"⏪ Seeked back {seconds} seconds.")
+
 
 # ==============================
 # Auto queue clear when VC ends
