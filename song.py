@@ -67,7 +67,14 @@ if not (API_ID and API_HASH and USERBOT_SESSION):
 # Pyrogram and PyTgCalls clients
 # -------------------------
 # bot: optional bot account (helps sending messages to groups)
-bot = Client("bot_account", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN) if BOT_TOKEN else None
+bot = Client(
+    "bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN,
+    plugins=dict(root="plugins")
+)
+
 # userbot: required for voice (user account)
 userbot = Client("userbot_account", session_string=USERBOT_SESSION, api_id=API_ID, api_hash=API_HASH)
 # PyTgCalls voice client attached to userbot
