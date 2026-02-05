@@ -5,7 +5,8 @@ import os
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL = "gemini-2.5-flash"
 
-chat_history = {}
+gemini_history = {}
+groq_history = {}
 MAX_HISTORY = 10
 
 
@@ -42,7 +43,7 @@ import os
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 async def ask_groq(chat_id: int, query: str) -> str:
-    history = chat_history.get(chat_id, [])
+    history = groq_history.get(chat_id, [])
     history.append({"role": "user", "content": query})
     history = history[-10:]
 
@@ -57,7 +58,7 @@ async def ask_groq(chat_id: int, query: str) -> str:
 
     reply = response.choices[0].message.content.strip()
     history.append({"role": "assistant", "content": reply})
-    chat_history[chat_id] = history
+    groq_history[chat_id] = history
 
     return reply
 
@@ -65,7 +66,7 @@ async def ask_groq(chat_id: int, query: str) -> str:
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 async def ask_ai(chat_id: int, query: str) -> str:
-    history = chat_history.get(chat_id, [])
+    history = gemini_history.get(chat_id, [])
 
     history.append(f"User: {query}")
     history = history[-MAX_HISTORY:]
@@ -82,9 +83,10 @@ async def ask_ai(chat_id: int, query: str) -> str:
 
     reply = response.text.strip()
     history.append(f"Waguri: {reply}")
-    chat_history[chat_id] = history
+    gemini_history[chat_id] = history
 
     return reply
+
 
 
 
