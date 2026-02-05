@@ -1,4 +1,4 @@
-from pyrogram import Client, filters
+from pyrogram import filters
 from core.ai_client import ask_ai
 from core.ai_client import ask_groq
 from song import BANNED_USERS
@@ -56,6 +56,7 @@ async def reply_handler(client, message):
     if replied and replied.from_user and replied.from_user.id == client.me.id:
         reply = await ask_groq(message.chat.id, message.text)
         await message.reply_text(reply)
+
 
 
 
