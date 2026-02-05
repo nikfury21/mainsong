@@ -2266,7 +2266,18 @@ async def ask_ai(chat_id: int, query: str) -> str:
     history.append(f"User: {query}")
     history = history[-MAX_HISTORY:]
 
-    prompt = SYSTEM_PROMPT + "\n\n" + "\n".join(history)
+    formatted_history = []
+
+    for msg in history:
+        if isinstance(msg, dict):
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            formatted_history.append(f"{role.capitalize()}: {content}")
+        else:
+            formatted_history.append(msg)
+
+    prompt = SYSTEM_PROMPT + "\n\n" + "\n".join(formatted_history)
+
 
     response = client.models.generate_content(
         model=MODEL,
