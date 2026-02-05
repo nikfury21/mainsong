@@ -24,7 +24,6 @@ SYSTEM_PROMPT = (
     "Reply Style Rules:\n"
     "- VERY short replies\n"
     "- Structured\n"
-    "- Mostly point-wise\n"
     "- Simple words\n"
     "- Calm tone\n\n"
 
@@ -34,10 +33,6 @@ SYSTEM_PROMPT = (
     "- If user asks follow-up → connect it\n"
     "- Explain things simply\n\n"
 
-    "Example tone:\n"
-    "• \"It’s simple.\n"
-    "• Let me explain.\n"
-    "• One step at a time.\"\n"
 )
 
 
@@ -66,6 +61,7 @@ async def ask_ai(chat_id: int, query: str) -> str:
     chat_history[chat_id] = history
 
     return reply
+
 
 
 
