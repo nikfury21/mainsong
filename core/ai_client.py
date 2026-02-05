@@ -74,7 +74,16 @@ import os
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 async def ask_groq(chat_id: int, query: str) -> str:
-    history = chat_history.get(chat_id, [])
+    raw_history = chat_history.get(chat_id, [])
+
+    # ✅ keep ONLY valid messages
+    history = [
+        msg for msg in raw_history
+        if isinstance(msg, dict)
+        and "role" in msg
+        and "content" in msg
+    ]
+
     history.append({"role": "user", "content": query})
     history = history[-10:]
 
@@ -88,6 +97,7 @@ async def ask_groq(chat_id: int, query: str) -> str:
     )
 
     reply = response.choices[0].message.content.strip()
+
     history.append({"role": "assistant", "content": reply})
     chat_history[chat_id] = history
 
@@ -117,6 +127,7 @@ async def ask_ai(chat_id: int, query: str) -> str:
     chat_history[chat_id] = history
 
     return reply
+
 
 
 
