@@ -1,5 +1,6 @@
 from google import genai
 from google.genai.types import Tool, GenerateContentConfig
+import os
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL = "gemini-2.5-flash"
@@ -69,4 +70,5 @@ async def ask_ai(query: str) -> str:
         )
     )
     return response.text.strip()
+
 
