@@ -25,3 +25,4 @@ pymongo
 gender-guesser
 beautifulsoup4
 aiohttp
+google-genai
