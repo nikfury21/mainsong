@@ -22,16 +22,18 @@ async def mention_handler(client, message):
     await message.reply_text(reply)
 
 
-@Client.on_message(filters.text & ~filters.command)
+@Client.on_message(filters.text & ~filters.command())
 async def name_call_handler(client, message):
-    text = message.text.lower()
-
-    if "waguri" in text:
+    if "waguri" in message.text.lower():
         reply = await ask_ai(message.chat.id, message.text)
         await message.reply_text(reply)
+
 
 @Client.on_message(filters.reply & filters.text)
 async def reply_handler(client, message):
-    if message.reply_to_message.from_user.username == "BestFreakingBot":
+    replied = message.reply_to_message
+
+    if replied and replied.from_user and replied.from_user.id == client.me.id:
         reply = await ask_ai(message.chat.id, message.text)
         await message.reply_text(reply)
+
