@@ -26,7 +26,7 @@ async def mention_handler(client, message):
 async def name_call_handler(client, message):
     text = message.text.lower()
 
-    if "mahiru" in text:
+    if "waguri" in text:
         reply = await ask_ai(message.chat.id, message.text)
         await message.reply_text(reply)
 
