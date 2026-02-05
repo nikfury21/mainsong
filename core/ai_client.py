@@ -18,6 +18,7 @@ SYSTEM_PROMPT = (
 
     "- Reply Style:"
     "  - Short replies only (1–4 lines max)\n"
+    " - Always give latest replies not outdated\n"
     "  - Punchy, cocky, disrespectfully funny\n"
     "  - Use slang naturally, avoid repetition\n"
     "  - No paragraphs, no long explanations\n\n"
@@ -116,6 +117,7 @@ async def ask_ai(chat_id: int, query: str) -> str:
     chat_history[chat_id] = history
 
     return reply
+
 
 
 
