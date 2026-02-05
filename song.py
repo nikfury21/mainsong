@@ -276,12 +276,6 @@ async def cleanup_chat(chat_id: int):
     except:
         pass
 
-async def is_vc_active(chat_id: int) -> bool:
-    try:
-        return call_py.get_call(chat_id) is not None
-    except:
-        return False
-
 
 
 
@@ -920,10 +914,7 @@ async def play_replied_audio(client, message):
     replied = message.reply_to_message
     chat_id = message.chat.id
 
-    if not await is_vc_active(chat_id):
-        return await message.reply_text(
-            "❌ Please start the voice chat first and then use /play."
-        )
+    
 
 
     if not replied.audio:
@@ -1022,10 +1013,7 @@ async def play_command(client: Client, message: Message):
     readable_duration = format_time(duration_seconds or 0)
     chat_id = message.chat.id
 
-    if not await is_vc_active(chat_id):
-        return await message.reply_text(
-            "❌ Please start the voice chat first and then use /play."
-        )
+    
 
 
     # --- Acquire per-chat lock to prevent races ---
@@ -1154,10 +1142,7 @@ async def vplay_command(client: Client, message: Message):
 
     chat_id = message.chat.id
 
-    if not await is_vc_active(chat_id):
-        return await message.reply_text(
-            "❌ Please start the voice chat first and then use /vplay."
-        )
+    
 
 
     try:
