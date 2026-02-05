@@ -109,41 +109,11 @@ PLAYLIST_BACKUP_FILE = "playlists_backup.json"
 
 import uuid
 
-LYRICS_CACHE = {}
-
-def safe_lyrics_button(title: str):
-    key = uuid.uuid4().hex[:8]   # always < 64 bytes
-    LYRICS_CACHE[key] = title
-    return InlineKeyboardButton("📜 Lyrics", callback_data=f"lyrics|{key}")
 
 
 
-def fetch_lyrics(query: str) -> str | None:
-    try:
-        url = "https://lrclib.net/api/search"
-        params = {"q": query}
-        r = requests.get(url, params=params, timeout=10)
 
-        if r.status_code != 200:
-            return None
 
-        data = r.json()
-        if not data:
-            return None
-
-        # Prefer synced lyrics, fallback to plain
-        for item in data:
-            if item.get("plainLyrics"):
-                return item["plainLyrics"]
-
-        return None
-
-    except Exception:
-        return None
-
-def is_hindi(text: str) -> bool:
-    """Return True if text contains Devanagari characters (basic Hindi detection)."""
-    return bool(re.search(r"[\u0900-\u097F]", text)) if text else False
 
 
 def format_views(count):
@@ -173,110 +143,9 @@ def normalize_lyrics_query(q: str) -> str:
 
     return q.strip()
 
-def lyrics_button(title: str):
-    key = uuid.uuid4().hex[:8]  # short & Telegram-safe
-    LYRICS_CACHE[key] = title  # store ORIGINAL YouTube title
-
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("📜 Lyrics", callback_data=f"lyrics|{key}")]]
-    )
 
 
 
-@handler_client.on_callback_query(filters.regex("^lyrics\\|"))
-async def lyrics_callback(_, query):
-    key = query.data.split("|", 1)[1]
-
-    title = LYRICS_CACHE.get(key)
-    if not title:
-        return await query.answer("❌ Lyrics expired.", show_alert=True)
-
-    # Normalize & fetch lyrics (same as before)
-    fixed = normalize_lyrics_query(title)
-    lyrics = await asyncio.to_thread(fetch_lyrics, fixed)
-
-    if not lyrics:
-        return await query.message.reply_text("❌ Lyrics not available.")
-
-    # cache the original lyrics for possible translation later
-    LYRICS_CACHE[f"lyrics_{key}"] = lyrics
-
-    # if lyrics are Hindi (Devanagari) -> show Translate button
-    buttons = None
-    if is_hindi(lyrics):
-        buttons = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("🌐 Translate to English", callback_data=f"translate|{key}")]]
-        )
-
-    # send original lyrics (no transliteration/translation here)
-    if len(lyrics) <= 4000:
-        await query.message.reply_text(lyrics, reply_markup=buttons)
-    else:
-        # if long, send first chunk with buttons, then the rest
-        await query.message.reply_text(lyrics[:4000], reply_markup=buttons)
-        for i in range(4000, len(lyrics), 4000):
-            await query.message.reply_text(lyrics[i:i+4000])
-
-
-
-
-@handler_client.on_callback_query(filters.regex("^translate\\|"))
-async def translate_lyrics_cb(_, query):
-    key = query.data.split("|", 1)[1]
-    lyrics = LYRICS_CACHE.get(f"lyrics_{key}")
-
-    # if not cached, ask user to press the lyrics button first
-    if not lyrics:
-        return await query.answer("❌ Original lyrics not found. Click the Lyrics button first.", show_alert=True)
-
-    # indicate work started
-    await query.answer("Translating…")
-
-    # build prompt (preserve line breaks, ask for natural English)
-    prompt = f"""
-Convert the following Hindi song lyrics into Hinglish.
-
-Rules:
-- Keep the language Hindi.
-- ONLY change the script from Devanagari to English letters.
-- Do NOT translate meanings into English.
-- Do NOT rewrite creatively.
-- Preserve line breaks exactly.
-- Use natural, commonly spoken Hinglish.
-- Avoid incorrect phonetics like: maim, mem, batem.
-- Use forms like: main, mein, baatein, hoon, kyun, nahi.
-
-Example:
-
-Hindi:
-हाँ, करता मैं बातें मेरी आईने से देखो तेरी
-तुझसे कैसे खुल के वैसे बोलूँ मैं ये राज़ दिल के?
-
-Correct Hinglish:
-haan, karta main baatein meri aaine se dekho teri
-tujhse kaise khul ke waise bolun main ye raaz dil ke?
-
-Now convert this:
-
-{lyrics}
-"""
-
-
-    try:
-        # call Gemini model (2.5-flash)
-        resp = gemini.generate_content(prompt)
-        translated = resp.text.strip()
-
-    except Exception as e:
-        await query.message.reply_text(f"❌ Translation failed: {e}")
-        return
-
-    # send translated text (split safely)
-    if len(translated) <= 4000:
-        await query.message.reply_text(translated)
-    else:
-        for i in range(0, len(translated), 4000):
-            await query.message.reply_text(translated[i:i+4000])
 
 
 
@@ -320,7 +189,7 @@ def get_user_playlists(user_id: int):
 def normalize_name(name: str) -> str:
     return name.strip().lower()
 
-
+loop_counts = {}
 current_song = {}
 music_queue = {}
 chat_locks = {}
@@ -760,7 +629,10 @@ async def play_playlist(client: Client, message: Message):
         fake = message
         fake.text = f"/play {song['query']}"
         fake.command = ["play", song["query"]]
+
         await play_command(client, fake)
+        await asyncio.sleep(60)
+
 
 
 
@@ -788,7 +660,6 @@ async def update_progress_message(chat_id, msg, start_time, total_dur, caption):
                 InlineKeyboardButton(" Resume", callback_data="resume")
             ],
             [InlineKeyboardButton(bar, callback_data="progress")],
-            lyrics_button(current_song[chat_id]["title"]).inline_keyboard[0]
         ])
 
         try:
@@ -1044,6 +915,12 @@ async def play_replied_audio(client, message):
     replied = message.reply_to_message
     chat_id = message.chat.id
 
+    if chat_id not in vc_active:
+        return await message.reply_text(
+            "❌ Please start the voice chat first and then use /play."
+        )
+
+
     if not replied.audio:
         return await message.reply_text(bi("Dude you was supposed to reply with an audio file."), parse_mode=ParseMode.HTML)
 
@@ -1093,7 +970,6 @@ async def play_replied_audio(client, message):
     await message.reply_text(
         f"{caption}\n\n<b>🎧 Streaming replied audio</b>",
         parse_mode=ParseMode.HTML,
-        reply_markup=lyrics_button(title)
     )
 
 
@@ -1140,6 +1016,12 @@ async def play_command(client: Client, message: Message):
                
     readable_duration = format_time(duration_seconds or 0)
     chat_id = message.chat.id
+
+    if chat_id not in vc_active:
+        return await message.reply_text(
+            "❌ Please start the voice chat first and then use /play."
+        )
+
 
     # --- Acquire per-chat lock to prevent races ---
     # 🔥 FIX: clear ghost state if VC ended earlier
@@ -1267,6 +1149,12 @@ async def vplay_command(client: Client, message: Message):
 
     chat_id = message.chat.id
 
+    if chat_id not in vc_active:
+        return await message.reply_text(
+            "❌ Please start the voice chat first and then use /vplay."
+        )
+
+
     try:
         video_path = await api_download_video(vid)
         title, _, _, duration, thumb_url = await get_youtube_details(vid)
@@ -1373,6 +1261,12 @@ async def handle_next(chat_id):
     lock = get_chat_lock(chat_id)
     async with lock:
 
+        # ── LOOP LOGIC ─────────────────────────────
+        prev = current_song.get(chat_id)
+        if prev and loop_counts.get(chat_id, 0) > 0:
+            loop_counts[chat_id] -= 1
+            music_queue.setdefault(chat_id, []).insert(0, prev.copy())
+
         # ── No songs left ─────────────────────────────
         if chat_id not in music_queue or not music_queue[chat_id]:
             await cleanup_chat(chat_id)
@@ -1399,14 +1293,14 @@ async def handle_next(chat_id):
                 if is_video:
                     await call_py.change_stream(
                         chat_id,
-                        MediaStream(next_song["url"])  # 🎬 VIDEO
+                        MediaStream(next_song["url"])
                     )
                 else:
                     await call_py.change_stream(
                         chat_id,
                         MediaStream(
                             next_song["url"],
-                            video_flags=MediaStream.Flags.IGNORE  # 🎧 AUDIO
+                            video_flags=MediaStream.Flags.IGNORE
                         )
                     )
             else:
@@ -1440,14 +1334,14 @@ async def handle_next(chat_id):
 
             bar = get_progress_bar(0, next_song.get("duration", 180))
 
+            # ── REMOVED LYRICS BUTTON ─────────────────
             kb = InlineKeyboardMarkup([
                 [
                     InlineKeyboardButton("⏸ Pause", callback_data="pause"),
                     InlineKeyboardButton("▶ Resume", callback_data="resume"),
                     InlineKeyboardButton("⏭ Skip", callback_data="skip")
                 ],
-                [InlineKeyboardButton(bar, callback_data="progress")],
-                [InlineKeyboardButton("📜 Lyrics", callback_data=f"lyrics|{next_song['title']}")]
+                [InlineKeyboardButton(bar, callback_data="progress")]
             ])
 
             msg = await bot.send_photo(
@@ -1492,6 +1386,24 @@ async def handle_next(chat_id):
                 pass
 
 
+@handler_client.on_message(filters.command("loop"))
+async def loop_command(client, message: Message):
+    args = message.command[1:]
+
+    if not args or not args[0].isdigit():
+        return await message.reply_text("❌ Usage: /loop <number>")
+
+    chat_id = message.chat.id
+
+    if chat_id not in current_song:
+        return await message.reply_text("❌ Nothing is playing.")
+
+    loop_counts[chat_id] = int(args[0])
+
+    await message.reply_text(
+        f"🔁 Loop set to {args[0]} time(s)."
+    )
+
 
 if HAS_STREAM_END:
     @call_py.on_stream_end()
@@ -1502,6 +1414,31 @@ if HAS_STREAM_END:
             return
 
         await handle_next(chat_id)
+
+
+@handler_client.on_message(filters.command("end"))
+async def end_command(client: Client, message: Message):
+
+    chat_id = message.chat.id
+
+    vc_session[chat_id] = vc_session.get(chat_id, 0) + 1
+
+    t = timers.pop(chat_id, None)
+    if t:
+        t.cancel()
+
+    music_queue.pop(chat_id, None)
+    current_song.pop(chat_id, None)
+    loop_counts.pop(chat_id, None)
+
+    try:
+        await call_py.leave_call(chat_id)
+    except:
+        pass
+
+    vc_active.discard(chat_id)
+
+    await message.reply_text("🛑 Ended everything.")
 
 
 @handler_client.on_message(filters.command("fplay"))
@@ -1925,12 +1862,12 @@ async def seek_forward(client, message: Message):
         return
 
     chat_id = message.chat.id
-    if chat_id not in music_queue or not music_queue[chat_id]:
-        await message.reply("❌ Nothing is playing.")
-        return
+    if chat_id not in current_song:
+        return await message.reply("❌ Nothing is playing.")
 
     seconds = int(args[1])
-    song_info = music_queue[chat_id][0]
+    song_info = current_song[chat_id]
+
     elapsed = int(time.time() - song_info.get("start_time", time.time()))
     seek_pos = elapsed + seconds
 
@@ -1949,12 +1886,12 @@ async def seek_backward(client, message: Message):
         return
 
     chat_id = message.chat.id
-    if chat_id not in music_queue or not music_queue[chat_id]:
-        await message.reply("❌ Nothing is playing.")
-        return
+    if chat_id not in current_song:
+        return await message.reply("❌ Nothing is playing.")
 
     seconds = int(args[1])
-    song_info = music_queue[chat_id][0]
+    song_info = current_song[chat_id]
+
     elapsed = int(time.time() - song_info.get("start_time", time.time()))
     seek_pos = max(0, elapsed - seconds)
 
