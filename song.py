@@ -276,6 +276,11 @@ async def cleanup_chat(chat_id: int):
     except:
         pass
 
+async def is_vc_active(chat_id: int) -> bool:
+    try:
+        return call_py.get_call(chat_id) is not None
+    except:
+        return False
 
 
 
@@ -915,7 +920,7 @@ async def play_replied_audio(client, message):
     replied = message.reply_to_message
     chat_id = message.chat.id
 
-    if chat_id not in vc_active:
+    if not await is_vc_active(chat_id):
         return await message.reply_text(
             "❌ Please start the voice chat first and then use /play."
         )
@@ -942,7 +947,7 @@ async def play_replied_audio(client, message):
                 video_flags=MediaStream.Flags.IGNORE
             )
         )
-        vc_active.add(chat_id)
+        vc_active.add(chat_id)  # optional, not trusted anymore
 
 
 
@@ -1017,7 +1022,7 @@ async def play_command(client: Client, message: Message):
     readable_duration = format_time(duration_seconds or 0)
     chat_id = message.chat.id
 
-    if chat_id not in vc_active:
+    if not await is_vc_active(chat_id):
         return await message.reply_text(
             "❌ Please start the voice chat first and then use /play."
         )
@@ -1081,7 +1086,7 @@ async def play_command(client: Client, message: Message):
                     video_flags=MediaStream.Flags.IGNORE
                 )
             )
-            vc_active.add(chat_id)
+            vc_active.add(chat_id)  # optional, not trusted anymore
 
 
 
@@ -1149,7 +1154,7 @@ async def vplay_command(client: Client, message: Message):
 
     chat_id = message.chat.id
 
-    if chat_id not in vc_active:
+    if not await is_vc_active(chat_id):
         return await message.reply_text(
             "❌ Please start the voice chat first and then use /vplay."
         )
@@ -1208,7 +1213,7 @@ async def vplay_command(client: Client, message: Message):
             chat_id,
             MediaStream(video_path)  # ✅ VIDEO STREAM
         )
-        vc_active.add(chat_id)
+        vc_active.add(chat_id)  # optional, not trusted anymore
 
         current_song[chat_id] = {
             "title": title,
@@ -1315,7 +1320,7 @@ async def handle_next(chat_id):
                         )
                     )
 
-            vc_active.add(chat_id)
+            vc_active.add(chat_id)  # optional, not trusted anymore
 
             # ── UI text ────────────────────────────────
             thumb = f"https://img.youtube.com/vi/{next_song.get('vid')}/hqdefault.jpg"
@@ -1410,7 +1415,7 @@ if HAS_STREAM_END:
     async def stream_end_handler(_, update):
         chat_id = update.chat_id
 
-        if chat_id not in vc_active:
+        if not await is_vc_active(chat_id):
             return
 
         await handle_next(chat_id)
@@ -1686,7 +1691,7 @@ async def auto_next_timer(chat_id: int, duration: int, session_id: int):
         if vc_session.get(chat_id) != session_id:
             return
 
-        if chat_id not in vc_active:
+        if not await is_vc_active(chat_id):
             return
 
         await handle_next(chat_id)
@@ -1736,7 +1741,7 @@ async def skip_command(client, message: Message):
         return
 
     # ✅ FIX: VC state check
-    if chat_id not in vc_active:
+    if not await is_vc_active(chat_id):
         return await message.reply_text("❌ Bot is not in a voice chat.")
 
     task = timers.pop(chat_id, None)
