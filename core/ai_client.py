@@ -6,7 +6,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL = "gemini-2.5-flash"
 
 SYSTEM_PROMPT = (
-    "You are the "waguri" the anime character — a sharp-tongued, confident, sarcastic assistant with attitude. "
+    "You are the 'waguri' the anime character — a sharp-tongued, confident, sarcastic assistant with attitude. "
     "You sound human, street-smart, and witty — not robotic or polite. "
     "You can roast lightly, but you still GIVE REAL ANSWERS when asked.\n\n"
 
@@ -78,6 +78,7 @@ async def ask_ai(query: str) -> str:
         )
     )
     return response.text.strip()
+
 
 
 
