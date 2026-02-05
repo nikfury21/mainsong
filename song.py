@@ -196,6 +196,7 @@ chat_locks = {}
 vc_session = {}  # chat_id -> unique session id
 vc_active = set()        # chats where bot is in VC
 timers = {}              # chat_id -> auto_next asyncio.Task
+BANNED_USERS = set()
 
 async def download_thumbnail(url: str) -> str | None:
     try:
@@ -254,6 +255,32 @@ async def get_youtube_details(video_id: str):
 
 
 import json
+
+
+@handler_client.on_message(filters.command("bban"))
+async def bban(_, message):
+    if message.from_user.id not in MODS:
+        return
+
+    if not message.reply_to_message:
+        return await message.reply_text("Reply to a user")
+
+    BANNED_USERS.add(message.reply_to_message.from_user.id)
+    await message.reply_text("User banned")
+
+
+@handler_client.on_message(filters.command("unbban"))
+async def unbban(_, message):
+    if message.from_user.id not in MODS:
+        return
+
+    if not message.reply_to_message:
+        return await message.reply_text("Reply to a user")
+
+    BANNED_USERS.discard(message.reply_to_message.from_user.id)
+    await message.reply_text("User unbanned")
+
+
 
 def dump_playlists_to_file(path=PLAYLIST_BACKUP_FILE):
     with open(path, "w", encoding="utf-8") as f:
@@ -470,6 +497,9 @@ def bi(text: str) -> str:
 
 @handler_client.on_message(filters.command("addplaylist"))
 async def add_playlist(client, message):
+    if message.from_user.id in BANNED_USERS:
+        return
+
     if len(message.command) < 2:
         return await message.reply_text(bi("Nah not like this qt, lemme show how its done\n/addplaylist (name)"), parse_mode=ParseMode.HTML)
 
@@ -493,6 +523,9 @@ async def add_playlist(client, message):
 
 @handler_client.on_message(filters.command("add"))
 async def add_to_playlist(client, message):
+    if message.from_user.id in BANNED_USERS:
+        return
+
     if len(message.command) < 2:
         return await message.reply_text(bi("Not again, lemme show you how its done\n/add (playlist name)"), parse_mode=ParseMode.HTML)
 
@@ -544,6 +577,9 @@ async def add_to_playlist(client, message):
 
 @handler_client.on_message(filters.command("playlist"))
 async def show_playlist(client, message):
+    if message.from_user.id in BANNED_USERS:
+        return
+
     if len(message.command) < 2:
         return await message.reply_text(bi("Nah dude not again like this, lemme show how its done:\n/playlist(name)"), parse_mode=ParseMode.HTML)
 
@@ -564,6 +600,9 @@ async def show_playlist(client, message):
 
 @handler_client.on_message(filters.command("dlt"))
 async def delete_playlist_or_song(client, message):
+    if message.from_user.id in BANNED_USERS:
+        return
+
     if len(message.command) < 2:
         return await message.reply_text(bi("Uk you have to be precise to use me haha, usage:\n/dlt (playlist name) (index)"), parse_mode=ParseMode.HTML)
     user_id = message.from_user.id
@@ -596,6 +635,9 @@ async def delete_playlist_or_song(client, message):
 
 @handler_client.on_message(filters.command("pplay"))
 async def play_playlist(client: Client, message: Message):
+    if message.from_user.id in BANNED_USERS:
+        return
+
     args = message.command[1:]
     if not args:
         return await message.reply_text(bi("Nah ik you are doing this like you doesnt know anything, usage-\n/pplay (playlist) &lt;random/index&gt;."), parse_mode=ParseMode.HTML)
@@ -706,6 +748,9 @@ async def ping_userbot(_, message: Message):
 
 @handler_client.on_message(filters.command("song"))
 async def song_command(client: Client, message: Message):
+    if message.from_user.id in BANNED_USERS:
+        return
+
     ADMIN = 8353079084
 
     import tempfile
@@ -911,6 +956,9 @@ async def song_command(client: Client, message: Message):
 
 @handler_client.on_message(filters.reply & filters.command("play"))
 async def play_replied_audio(client, message):
+    if message.from_user.id in BANNED_USERS:
+        return
+
     replied = message.reply_to_message
     chat_id = message.chat.id
 
@@ -973,6 +1021,9 @@ async def play_replied_audio(client, message):
 
 @handler_client.on_message(filters.command("play"))
 async def play_command(client: Client, message: Message):
+    if message.from_user.id in BANNED_USERS:
+        return
+
     """/play <query> - same search/result as /song but robust to race conditions"""
     query = " ".join(message.command[1:]).strip()
     if not query:
@@ -1132,6 +1183,9 @@ async def play_command(client: Client, message: Message):
 
 @handler_client.on_message(filters.command("vplay"))
 async def vplay_command(client: Client, message: Message):
+    if message.from_user.id in BANNED_USERS:
+        return
+
     query = " ".join(message.command[1:]).strip()
     if not query:
         return await message.reply_text(bi("Hey you, yes you, eat almonds, you forgot to give a video name after /vplay, kid."), parse_mode=ParseMode.HTML)
@@ -1378,6 +1432,9 @@ async def handle_next(chat_id):
 
 @handler_client.on_message(filters.command("loop"))
 async def loop_command(client, message: Message):
+    if message.from_user.id in BANNED_USERS:
+        return
+
     args = message.command[1:]
 
     if not args or not args[0].isdigit():
@@ -1408,6 +1465,9 @@ if HAS_STREAM_END:
 
 @handler_client.on_message(filters.command("end"))
 async def end_command(client: Client, message: Message):
+    if message.from_user.id in BANNED_USERS:
+        return
+
 
     chat_id = message.chat.id
 
@@ -1433,6 +1493,9 @@ async def end_command(client: Client, message: Message):
 
 @handler_client.on_message(filters.command("fplay"))
 async def fplay_command(client: Client, message: Message):
+    if message.from_user.id in BANNED_USERS:
+        return
+
     """Force play a song immediately, stopping current playback. The previous current song is moved to the front of the queue."""
     query = " ".join(message.command[1:]).strip()
     if not query:
@@ -1531,6 +1594,9 @@ async def fplay_command(client: Client, message: Message):
 
 @handler_client.on_message(filters.command("video"))
 async def video_command(client: Client, message: Message):
+    if message.from_user.id in BANNED_USERS:
+        return
+
     query = " ".join(message.command[1:]).strip()
     if not query:
         return await message.reply_text(
@@ -1651,6 +1717,9 @@ async def video_command(client: Client, message: Message):
 
 @handler_client.on_message(filters.command("resetvc"))
 async def reset_vc(client: Client, message: Message):
+    if message.from_user.id in BANNED_USERS:
+        return
+
     if message.from_user.id not in MODS:
         return
 
@@ -1691,6 +1760,9 @@ async def auto_next_timer(chat_id: int, duration: int, session_id: int):
 
 @handler_client.on_message(filters.command("mpause"))
 async def mpause_command(client, message: Message):
+    if message.from_user.id in BANNED_USERS:
+        return
+
     user = await client.get_chat_member(message.chat.id, message.from_user.id)
     if not (user.privileges or user.status in ("administrator", "creator")):
         await message.reply_text("❌ You need to be an admin to use this command.")
@@ -1703,6 +1775,9 @@ async def mpause_command(client, message: Message):
 
 @handler_client.on_message(filters.command("mresume"))
 async def mresume_command(client, message: Message):
+    if message.from_user.id in BANNED_USERS:
+        return
+
     user = await client.get_chat_member(message.chat.id, message.from_user.id)
     if not (user.privileges or user.status in ("administrator", "creator")):
         await message.reply_text("❌ You need to be an admin to use this command.")
@@ -1715,6 +1790,9 @@ async def mresume_command(client, message: Message):
 
 @handler_client.on_message(filters.command("skip"))
 async def skip_command(client, message: Message):
+    if message.from_user.id in BANNED_USERS:
+        return
+
     chat_id = message.chat.id   # ✅ FIX: define chat_id
 
     user = await client.get_chat_member(chat_id, message.from_user.id)
@@ -1759,6 +1837,9 @@ async def skip_command(client, message: Message):
 
 @handler_client.on_message(filters.command("clear"))
 async def clear_queue(client, message: Message):
+    if message.from_user.id in BANNED_USERS:
+        return
+
     chat_id = message.chat.id
     user = await client.get_chat_member(chat_id, message.from_user.id)
     if not (user.privileges or user.status in ("administrator", "creator")):
@@ -1846,6 +1927,9 @@ async def restart_with_seek(chat_id: int, seek_pos: int, message: Message):
 
 @handler_client.on_message(filters.command("seek"))
 async def seek_cmd(client, message):
+    if message.from_user.id in BANNED_USERS:
+        return
+
     chat_id = message.chat.id
 
     if len(message.command) < 2:
@@ -1879,6 +1963,9 @@ async def seek_cmd(client, message):
 
 @handler_client.on_message(filters.command("seekback"))
 async def seekback_cmd(client, message):
+    if message.from_user.id in BANNED_USERS:
+        return
+
     chat_id = message.chat.id
 
     if len(message.command) < 2:
