@@ -1,5 +1,6 @@
 from pyrogram import Client, filters
 from core.ai_client import ask_ai
+from core.ai_client import ask_groq
 
 @Client.on_message(filters.command("ask") & filters.text)
 async def ask_handler(client, message):
@@ -18,7 +19,7 @@ async def mention_handler(client, message):
     if not query:
         query = "Hello"
 
-    reply = await ask_ai(message.chat.id, query)
+    reply = await ask_groq(message.chat.id, query)
     await message.reply_text(reply)
 
 
@@ -28,7 +29,7 @@ async def name_call_handler(client, message):
         return
 
     if "waguri" in message.text.lower():
-        reply = await ask_ai(message.chat.id, message.text)
+        reply = await ask_groq(message.chat.id, message.text)
         await message.reply_text(reply)
 
 
@@ -37,6 +38,6 @@ async def reply_handler(client, message):
     replied = message.reply_to_message
 
     if replied and replied.from_user and replied.from_user.id == client.me.id:
-        reply = await ask_ai(message.chat.id, message.text)
+        reply = await ask_groq(message.chat.id, message.text)
         await message.reply_text(reply)
 
