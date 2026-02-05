@@ -22,8 +22,11 @@ async def mention_handler(client, message):
     await message.reply_text(reply)
 
 
-@Client.on_message(filters.text & ~filters.command())
+@Client.on_message(filters.text)
 async def name_call_handler(client, message):
+    if message.text.startswith("/"):
+        return
+
     if "waguri" in message.text.lower():
         reply = await ask_ai(message.chat.id, message.text)
         await message.reply_text(reply)
