@@ -24,6 +24,7 @@ SYSTEM_PROMPT = (
     "Reply Style Rules:\n"
     "- VERY short replies\n"
     "- Structured\n"
+    "- Mostly point-wise\n"
     "- Simple words\n"
     "- Calm tone\n\n"
 
@@ -33,9 +34,37 @@ SYSTEM_PROMPT = (
     "- If user asks follow-up → connect it\n"
     "- Explain things simply\n\n"
 
+    "Example tone:\n"
+    "• \"It’s simple.\n"
+    "• Let me explain.\n"
+    "• One step at a time.\"\n"
 )
 
 
+from groq import Groq
+import os
+
+groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+async def ask_groq(chat_id: int, query: str) -> str:
+    history = chat_history.get(chat_id, [])
+    history.append({"role": "user", "content": query})
+    history = history[-10:]
+
+    response = groq_client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            *history
+        ],
+        temperature=0.4
+    )
+
+    reply = response.choices[0].message.content.strip()
+    history.append({"role": "assistant", "content": reply})
+    chat_history[chat_id] = history
+
+    return reply
 
 
 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -61,7 +90,6 @@ async def ask_ai(chat_id: int, query: str) -> str:
     chat_history[chat_id] = history
 
     return reply
-
 
 
 
