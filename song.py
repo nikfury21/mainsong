@@ -893,9 +893,17 @@ async def song_command(client: Client, message: Message):
             # build caption
             artist, _ = parse_artist_and_title(video_title)
             title = video_title
+            title = clean_text(title)
+            channel = clean_text(channel)
+
+
+            from urllib.parse import quote_plus
+
+            safe_title = clean_text(title)
 
             youtube_url = f"https://youtu.be/{video_id}"
-            lyrics_url = f"https://www.google.com/search?q={title.replace(' ', '+')}+lyrics"
+            lyrics_url = "https://www.google.com/search?q=" + quote_plus(safe_title + " lyrics")
+
             views_text = format_views(views)
             user = message.from_user
 
@@ -952,7 +960,13 @@ async def song_command(client: Client, message: Message):
 
         except Exception as e:
             await client.send_message(ADMIN, f"Upload error: {e}")
-            await safe_edit(progress_msg, _single_step_text(6, 6, bi("Uff, upload failed, dont blame me for this."), ParseMode.HTML, last_edit_time_holder=last_edit_ref))
+            await safe_edit(
+                progress_msg,
+                _single_step_text(6, 6, bi("Uff, upload failed, dont blame me for this.")),
+                ParseMode.HTML,
+                last_edit_time_holder=last_edit_ref
+            )
+
         finally:
             try: os.remove(temp_path)
             except: pass
