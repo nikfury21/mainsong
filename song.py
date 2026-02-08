@@ -108,6 +108,10 @@ PLAYLIST_BACKUP_FILE = "playlists_backup.json"
 
 import uuid
 
+def clean_text(s: str) -> str:
+    if not s:
+        return ""
+    return s.encode("utf-8", "ignore").decode("utf-8", "ignore")
 
 
 async def is_vc_active(chat_id: int) -> bool:
@@ -827,10 +831,10 @@ async def song_command(client: Client, message: Message):
             # fetch real YouTube metadata
             video_title, channel, views, duration, thumb_url = await get_youtube_details(video_id)
 
-
-            # fallback safety
-            video_title = video_title or user_query
+            video_title = clean_text(video_title or user_query)
+            channel = clean_text(channel or "Unknown")
             duration = duration or 0
+
 
             # ⛔ duration limit: 2 hours
             if duration > 7200:
@@ -929,7 +933,7 @@ async def song_command(client: Client, message: Message):
                 thumb=thumb_path if thumb_path else None,
                 caption=caption,
                 parse_mode=ParseMode.HTML,
-                file_name=f"{title}.mp3",
+                file_name=f"{clean_text(title)}.mp3",
             )
 
 
