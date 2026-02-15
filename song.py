@@ -2433,23 +2433,30 @@ async def afk_watcher(client, message):
 
     # === AFK RETURN CHECK ===
     if sender_id in afk_users:
-        afk_data = afk_users[sender_id]
+        afk_data = afk_users.pop(sender_id)
 
-        should_end_afk = False
-        if "chats" in afk_data:
-            if current_chat in afk_data["chats"]:
-                should_end_afk = True
-        else:
-            should_end_afk = True
+        duration = datetime.utcnow() - afk_data["time"]
+        seconds = int(duration.total_seconds())
+        h, rem = divmod(seconds, 3600)
+        m, s = divmod(rem, 60)
 
-        if should_end_afk:
-            if current_chat in afk_data.get("chats", set()):
-                afk_data["chats"].discard(current_chat)
+        parts = []
+        if h: parts.append(f"{h}h")
+        if m: parts.append(f"{m}m")
+        if s: parts.append(f"{s}s")
 
-            if not afk_data.get("chats"):
-                afk_data = afk_users.pop(sender_id, None)
-            else:
-                afk_users[sender_id] = afk_data
+        duration_str = " ".join(parts) or "moments"
+
+        text = (
+            f"<a href='tg://user?id={sender_id}'>"
+            f"{message.from_user.first_name}</a> is now back online "
+            f"and was AFK for {duration_str}."
+        )
+
+        if afk_data.get("reason") and afk_data["reason"] != "None":
+            text += f"\nReason: {afk_data['reason']}"
+
+        await message.reply_text(text, parse_mode=ParseMode.HTML)
 
         if afk_data:
             duration = datetime.utcnow() - afk_data["time"]
