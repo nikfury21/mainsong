@@ -16,7 +16,10 @@ from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream
 import re
 from functools import partial
-
+import html
+from PIL import Image
+from io import BytesIO
+from telegram import InputFile
 
 # --- Compatibility handling for PyTgCalls versions ---
 try:
@@ -206,6 +209,8 @@ vc_session = {}  # chat_id -> unique session id
 vc_active = set()        # chats where bot is in VC
 timers = {}              # chat_id -> auto_next asyncio.Task
 BANNED_USERS = set()
+afk_users = {}
+
 
 async def download_thumbnail(url: str) -> str | None:
     try:
@@ -1882,7 +1887,6 @@ async def clear_queue(client, message: Message):
 # ==============================
 # Native Seek / Seekback + Auto Queue Clear + Ping
 # ==============================
-from datetime import datetime
 
 BOT_START_TIME = time.time()
 
@@ -2365,6 +2369,165 @@ async def reply_handler(client, message):
     if replied and replied.from_user.id == client.me.id:
         reply = await ask_groq(message.chat.id, message.text)
         await message.reply_text(reply)
+
+
+# ================= AFK LOGIC ================= #
+
+@handler_client.on_message(filters.command("afk"))
+async def afk_command(client, message):
+    global afk_users
+
+    user = message.from_user
+    reason = "None"
+    if len(message.command) > 1:
+        reason = " ".join(message.command[1:]).strip() or "None"
+
+    afk_media = None
+    afk_media_type = None
+
+    if message.reply_to_message:
+        reply = message.reply_to_message
+        if reply.photo:
+            afk_media = reply.photo[-1].file_id
+            afk_media_type = "photo"
+        elif reply.sticker:
+            afk_media = reply.sticker.file_id
+            afk_media_type = "sticker"
+
+    chat_id = message.chat.id
+    existing = afk_users.get(user.id)
+
+    if existing:
+        chats = existing.get("chats", set())
+        chats.add(chat_id)
+    else:
+        chats = {chat_id}
+
+    afk_users[user.id] = {
+        "time": datetime.utcnow(),
+        "reason": reason,
+        "media": afk_media,
+        "media_type": afk_media_type,
+        "chats": chats,
+    }
+
+    text = (
+        f"<a href='tg://user?id={user.id}'>"
+        f"{user.first_name}</a> is now away from keyboard! Sayonara!"
+    )
+
+    if reason and reason != "None":
+        text += f"\nReason: {reason}"
+
+    await message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+@handler_client.on_message(filters.text & ~filters.command(["afk"]))
+async def afk_watcher(client, message):
+    global afk_users
+
+    if not message.from_user:
+        return
+
+    sender_id = message.from_user.id
+    current_chat = message.chat.id
+
+    # === AFK RETURN CHECK ===
+    if sender_id in afk_users:
+        afk_data = afk_users[sender_id]
+
+        should_end_afk = False
+        if "chats" in afk_data:
+            if current_chat in afk_data["chats"]:
+                should_end_afk = True
+        else:
+            should_end_afk = True
+
+        if should_end_afk:
+            if current_chat in afk_data.get("chats", set()):
+                afk_data["chats"].discard(current_chat)
+
+            if not afk_data.get("chats"):
+                afk_data = afk_users.pop(sender_id, None)
+            else:
+                afk_users[sender_id] = afk_data
+
+        if afk_data:
+            duration = datetime.utcnow() - afk_data["time"]
+            seconds = int(duration.total_seconds())
+            h, rem = divmod(seconds, 3600)
+            m, s = divmod(rem, 60)
+
+            parts = []
+            if h: parts.append(f"{h}h")
+            if m: parts.append(f"{m}m")
+            if s: parts.append(f"{s}s")
+
+            duration_str = " ".join(parts) or "moments"
+
+            text = (
+                f"<a href='tg://user?id={sender_id}'>"
+                f"{message.from_user.first_name}</a> is now back online and was AFK for {duration_str}."
+            )
+
+            if afk_data.get("reason") and afk_data["reason"] != "None":
+                text += f"\nReason: {afk_data['reason']}"
+
+            await message.reply_text(text, parse_mode=ParseMode.HTML)
+
+    # === MENTION CHECK ===
+    mentioned = set()
+
+    if message.entities:
+        for ent in message.entities:
+            if ent.type == "text_mention" and ent.user:
+                if ent.user.id in afk_users:
+                    mentioned.add(ent.user.id)
+
+            elif ent.type == "mention":
+                username = message.text[ent.offset:ent.offset + ent.length]
+                for uid in afk_users:
+                    try:
+                        user = await client.get_users(uid)
+                        if user.username and username.lower() == f"@{user.username.lower()}":
+                            mentioned.add(uid)
+                    except:
+                        continue
+
+    if message.reply_to_message:
+        replied_user = message.reply_to_message.from_user
+        if replied_user and replied_user.id in afk_users:
+            mentioned.add(replied_user.id)
+
+    for uid in mentioned:
+        afk_data = afk_users.get(uid)
+        if not afk_data:
+            continue
+
+        duration = datetime.utcnow() - afk_data["time"]
+        seconds = int(duration.total_seconds())
+        h, rem = divmod(seconds, 3600)
+        m, s = divmod(rem, 60)
+
+        parts = []
+        if h: parts.append(f"{h}h")
+        if m: parts.append(f"{m}m")
+        if s: parts.append(f"{s}s")
+
+        duration_str = " ".join(parts) or "moments"
+
+        user = await client.get_users(uid)
+
+        text = (
+            f"<a href='tg://user?id={uid}'>"
+            f"{user.first_name}</a> is AFK since {duration_str}."
+        )
+
+        if afk_data.get("reason") and afk_data["reason"] != "None":
+            text += f"\nReason: {afk_data['reason']}"
+
+        await message.reply_text(text, parse_mode=ParseMode.HTML)
+
 
 # ================================
 #   Docker / Render-safe startup
