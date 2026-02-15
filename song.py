@@ -2372,7 +2372,7 @@ async def reply_handler(client, message):
 
 # ================= AFK LOGIC ================= #
 
-@app.on_message(filters.command("afk") & filters.group)
+@Bot.on_message(filters.command("afk") & filters.group)
 async def afk_command(client, message):
     global afk_users
 
