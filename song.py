@@ -2372,12 +2372,13 @@ async def reply_handler(client, message):
 
 # ================= AFK LOGIC ================= #
 
-@handler_client.on_message(filters.command("afk"))
+@app.on_message(filters.command("afk") & filters.group)
 async def afk_command(client, message):
     global afk_users
 
     user = message.from_user
     reason = "None"
+
     if len(message.command) > 1:
         reason = " ".join(message.command[1:]).strip() or "None"
 
@@ -2418,7 +2419,7 @@ async def afk_command(client, message):
     if reason and reason != "None":
         text += f"\nReason: {reason}"
 
-    await message.reply_text(text, parse_mode=ParseMode.HTML)
+    await message.reply_text(text)
 
 
 @handler_client.on_message(filters.text & ~filters.command(["afk"]))
