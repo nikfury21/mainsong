@@ -2421,7 +2421,7 @@ async def afk_command(client, message):
     await message.reply_text(text)
 
 
-@bot.on_message(filters.text & ~filters.command(["afk"]))
+@bot.on_message(filters.all & ~filters.command(["afk"]))
 async def afk_watcher(client, message):
     global afk_users
 
