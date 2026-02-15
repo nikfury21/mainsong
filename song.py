@@ -19,7 +19,6 @@ from functools import partial
 import html
 from PIL import Image
 from io import BytesIO
-from telegram import InputFile
 
 # --- Compatibility handling for PyTgCalls versions ---
 try:
