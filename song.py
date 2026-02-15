@@ -2341,7 +2341,6 @@ async def mention_handler(client, message):
     query = message.text.replace("@BestFreakingBot", "").strip()
     if not query:
         query = "Hello"
-
     reply = await ask_groq(message.chat.id, query)
     await message.reply_text(reply)
 
@@ -2372,7 +2371,7 @@ async def reply_handler(client, message):
 
 # ================= AFK LOGIC ================= #
 
-@Client.on_message(filters.command("afk"), group=-1)
+@bot.on_message(filters.command("afk"), group=-1)
 async def afk_command(client, message):
     global afk_users
 
@@ -2422,7 +2421,7 @@ async def afk_command(client, message):
     await message.reply_text(text)
 
 
-@handler_client.on_message(filters.text & ~filters.command(["afk"]))
+@bot.on_message(filters.text & ~filters.command(["afk"]))
 async def afk_watcher(client, message):
     global afk_users
 
